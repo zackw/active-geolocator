@@ -61,20 +61,25 @@ def perform_probes(addresses, spacing, parallel, timeout, wr):
     pending = set()
     addresses.reverse()
     last_connection = 0
+    last_progress = 0
     total = len(addresses)
     complete = 0
+    change = False
 
     try:
         while pending or addresses:
             now = tick()
-            progress(now, total, len(pending), complete)
+            if change or now - last_progress > 10:
+                progress(now, total, len(pending), complete)
+                last_progress = now
+                change = False
 
             if (len(pending) < parallel and addresses
                 and now - last_connection >= spacing):
 
                 addr = addresses.pop()
                 sock = socket.socket(addr[0], addr[1], addr[2])
-                sock.settimeout(timeout)
+                sock.setblocking(False)
 
                 last_connection = tick()
                 err = sock.connect_ex(addr[4])
@@ -83,18 +88,20 @@ def perform_probes(addresses, spacing, parallel, timeout, wr):
                     # in progress and we must wait for results.
                     pending.add(sel.register(sock, EVENT_RW,
                                              (addr[4][0], last_connection)))
+                    change = True
 
                 elif err in (0,
-                           errno.ECONNREFUSED,
-                           errno.EHOSTUNREACH,
-                           errno.ENETUNREACH,
-                           errno.ETIMEDOUT,
-                           errno.ECONNRESET):
+                             errno.ECONNREFUSED,
+                             errno.EHOSTUNREACH,
+                             errno.ENETUNREACH,
+                             errno.ETIMEDOUT,
+                             errno.ECONNRESET):
                     # The connection attempt resolved before connect()
                     # returned.
                     after = tick()
                     wr.writerow((addr[4][0], after - now))
                     complete += 1
+                    change = True
 
                 else:
                     # Something dire has happened and we probably
@@ -116,9 +123,21 @@ def perform_probes(addresses, spacing, parallel, timeout, wr):
                 pending.remove(key)
                 wr.writerow((addr, after - before))
                 complete += 1
+                change = True
+
+            # Check for timeouts.
+            for key in list(pending):
+                addr, before = key.data
+                if after - before >= timeout:
+                    sel.unregister(key.fileobj)
+                    key.fileobj.close()
+                    pending.remove(key)
+                    wr.writerow((addr, after - before))
+                    complete += 1
+                    change = True
 
         #end while
-        return rv
+        progress(now, total, len(pending), complete)
 
     finally:
         for key in pending:

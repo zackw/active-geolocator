@@ -164,7 +164,7 @@ class GeographicMatrix:
                     val = 0
                 else:
                     # in between
-                    val = min(1, max(0,
+                    val = 1 - min(1, max(0,
                         pt.distance(inner_boundary)/self.fuzz_deg))
 
                 if sense == '+':

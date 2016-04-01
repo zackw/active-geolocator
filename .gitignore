@@ -8,3 +8,8 @@ __pycache__/
 
 # Probe sets and probe results
 *.csv
+
+# Editor junk
+.#*
+\#*#
+*~

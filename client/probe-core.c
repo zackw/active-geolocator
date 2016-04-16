@@ -26,11 +26,11 @@
  * descriptors is small.
  */
 
-#define _XOPEN_SOURCE 700
-#define _FILE_OFFSET_BITS 64 /* might not be necessary, but safe */
+#include "config.h"
 
 #include <stddef.h>
 #include <stdbool.h>
+#include <stdint.h>
 #include <sys/types.h>
 
 #include <ctype.h>
@@ -50,6 +50,10 @@
 #include <arpa/inet.h>
 #include <time.h>
 #include <unistd.h>
+
+#if !defined HAVE_CLOCK_GETTIME && defined HAVE_MACH_ABSOLUTE_TIME
+#include <mach/mach_time.h>
+#endif
 
 #if defined __GNUC__ && __GNUC__ >= 4
 #define NORETURN void __attribute__((noreturn))
@@ -140,79 +144,160 @@ xreallocarray(void *optr, size_t nmemb, size_t size)
   return rv;
 }
 
-/* Timespec utilities */
+/* Time handling.  We prefer `clock_gettime(CLOCK_MONOTONIC)`, but
+   we'll use `mach_get_absolute_time` or `gettimeofday` (which are not
+   guaranteed to be monotonic) if that's all we can have.  All are
+   converted to unsigned 64-bit nanosecond counts (relative to program
+   start, to avoid overflow) for calculation.  */
 
-static struct timespec
-timespec_minus(struct timespec end, struct timespec start)
+#if defined HAVE_CLOCK_GETTIME
+static time_t clock_zero_seconds;
+static void
+clock_init(void)
 {
-  struct timespec temp;
-  if (end.tv_nsec - start.tv_nsec < 0) {
-    temp.tv_sec = end.tv_sec - start.tv_sec - 1;
-    temp.tv_nsec = 1000000000 + end.tv_nsec - start.tv_nsec;
-  } else {
-    temp.tv_sec = end.tv_sec - start.tv_sec;
-    temp.tv_nsec = end.tv_nsec - start.tv_nsec;
+  struct timespec t;
+  clock_gettime(CLOCK_MONOTONIC, &t);
+  clock_zero_seconds = t.tv_sec;
+}
+
+static uint64_t
+clock_monotonic(void)
+{
+  struct timespec t;
+  clock_gettime(CLOCK_MONOTONIC, &ts);
+  return ((uint64_t)(t.tv_sec - clock_zero_seconds)) * 1000000000 + t.tv_nsec;
+}
+
+#elif defined HAVE_MACH_ABSOLUTE_TIME
+/* from https://stackoverflow.com/questions/23378063/ "pragmatic
+   answer", converted to C */
+
+static mach_timebase_info_data_t ratio;
+static uint64_t bias;
+static void
+clock_init(void)
+{
+  mach_timebase_info_data_t tb;
+  kern_return_t status = mach_timebase_info(&tb);
+  if (status != KERN_SUCCESS)
+    // There doesn't seem to be an equivalent of strerror() for
+    // kern_return_t, but it doesn't matter because mach_timebase_info
+    // can't actually fail (per code inspection).
+    fatal_printf("mach_timebase_info: failed (code %d)", status);
+
+  uint64_t now = mach_absolute_time();
+  if (tb.denom > 1024) {
+    double frac = (double)tb.numer/tb.denom;
+    tb.denom = 1024;
+    tb.numer = tb.denom * frac + 0.5;
+    if (tb.numer <= 0)
+      fatal_printf("scaling mach_timebase_info failed (frac=%f)", frac);
   }
-  return temp;
+  bias = now;
+  ratio = tb;
 }
 
-static bool
-timespec_isless(struct timespec a, struct timespec b)
+static uint64_t
+clock_monotonic(void)
 {
-  if (a.tv_sec < b.tv_sec)
-    return true;
-  if (a.tv_sec > b.tv_sec)
-    return false;
-  return a.tv_nsec < b.tv_nsec;
+  uint64_t now = mach_absolute_time();
+  return (now - bias) * ratio.numer / ratio.denom;
 }
 
-static int
-timespec_to_millis(struct timespec t)
+#elif defined HAVE_GETTIMEOFDAY
+static time_t clock_zero_seconds;
+static void
+clock_init(void)
 {
-  double val = (t.tv_sec + ((double)t.tv_nsec) * 1e-9) * 1e3;
-  if (val <= 0 || val > INT_MAX)
-    fatal_eprintf("cannot convert '%.6f' milliseconds to an int", val);
-  return lrint(val);
+  struct timeval t;
+  gettimeofday(&t, 0);
+  clock_zero_seconds = t.tv_sec;
 }
 
-static struct timespec
-timespec_parse_decimal_seconds(const char *secs, const char *msgprefix)
+static uint64_t
+clock_monotonic(void)
+{
+  struct timeval t;
+  gettimeofday(&t, 0);
+  return ((((uint64_t)(t.tv_sec - clock_zero_seconds)) * 1000000 + t.tv_usec)
+          * 1000);
+}
+
+#else
+# error "Need a high-resolution monotonic clock"
+#endif
+
+static uint64_t
+clock_parse_decimal_seconds(const char *str, const char *msgprefix)
 {
   double n;
   char *endp;
-  struct timespec rv;
 
   errno = 0;
-  n = strtod(secs, &endp);
-  if (endp == secs || *endp != '\0')
-    fatal_printf("%s: '%s': invalid number", msgprefix, secs);
+  n = strtod(str, &endp);
+  if (endp == str || *endp != '\0')
+    fatal_printf("%s: '%s': invalid number", msgprefix, str);
   else if (errno)
-    fatal_eprintf("%s: '%s'", msgprefix, secs);
+    fatal_eprintf("%s: '%s'", msgprefix, str);
   else if (n <= 0)
-    fatal_printf("%s: '%s': must be positive", msgprefix, secs);
+    fatal_printf("%s: '%s': must be positive", msgprefix, str);
 
-  rv.tv_sec  = (time_t) floor(n);
-  rv.tv_nsec = lrint((n - rv.tv_sec) * 1e9);
-  if (rv.tv_nsec < 0) {
-    rv.tv_sec -= 1;
-    rv.tv_nsec += 1000000000;
-  }
-  return rv;
+  return (uint64_t) lrint(n * 1e9);
 }
 
 static void
-timespec_print_decimal_seconds(FILE *fp, const struct timespec *ts)
+clock_print_decimal_seconds(FILE *fp, uint64_t nsec)
 {
-  fprintf(fp, "%ld.%09ld", ts->tv_sec, ts->tv_nsec);
+  double n = ((double)nsec) * 1e-9;
+  fprintf(fp, "%f", n);
 }
+
+#ifdef HAVE_PPOLL
+typedef struct timespec poll_timeout;
+
+static poll_timeout
+clock_to_timeout(uint64_t nsec)
+{
+  poll_timeout rv;
+  rv.tv_sec  = nsec / 1000000000;
+  rv.tv_nsec = nsec % 1000000000;
+  return rv;
+}
+
+static int
+clock_poll(struct pollfd fds[], nfds_t nfds, poll_timeout timeout)
+{
+  return ppoll(fds, nfds, &timeout, 0);
+}
+
+#elif HAVE_POLL
+typedef int poll_timeout;
+
+static poll_timeout
+clock_to_timeout(uint64_t nsec)
+{
+  /* plain poll() timeout is in milliseconds */
+  return nsec / 1000000;
+}
+
+static int
+clock_poll(struct pollfd fds[], nfds_t nfds, poll_timeout timeout)
+{
+  return poll(fds, nfds, timeout);
+}
+
+#else
+# error "need a way to wait for multiple sockets with timeout"
+#endif
+
 
 /* Input and output. */
 
 struct conn_data
 {
   struct sockaddr_in addr;
-  struct timespec begin;
-  struct timespec end;
+  uint64_t begin;
+  uint64_t end;
   int errnm;
 };
 
@@ -220,6 +305,80 @@ struct conn_buffer {
   size_t n_conns;
   struct conn_data *conns;
 };
+
+#ifndef HAVE_GETLINE
+/* getline replacement taken from gnulib */
+#define MIN_CHUNK 64
+static int
+getline(char **lineptr, size_t *n, FILE *stream)
+{
+  if (!lineptr || !n || !stream) {
+    errno = EINVAL;
+    return -1;
+  }
+
+  if (!*lineptr) {
+    *n = MIN_CHUNK;
+    *lineptr = malloc(*n);
+    if (!*lineptr) {
+      errno = ENOMEM;
+      return -1;
+    }
+  }
+
+  int nchars_avail = *n - offset;
+  char *read_pos = *lineptr;
+
+  for (;;) {
+    int save_errno;
+    int c = getc(stream);
+
+    save_errno = errno;
+
+    /* We always want at least one char left in the buffer, since we
+       always (unless we get an error while reading the first char)
+       NUL-terminate the line buffer.  */
+    if (nchars_avail < 2) {
+      if (*n > MIN_CHUNK)
+        *n = *n * 3 / 2;
+      else
+        *n += MIN_CHUNK;
+
+      nchars_avail = *n + *lineptr - read_pos;
+      *lineptr = realloc(*lineptr, *n);
+      if (!*lineptr) {
+        errno = ENOMEM;
+        return -1;
+      }
+      read_pos = *n - nchars_avail + *lineptr;
+    }
+
+    if (ferror(stream)) {
+      errno = save_errno;
+      return -1;
+    }
+
+    if (c == EOF) {
+      /* Return partial line, if any.  */
+      if (read_pos == *lineptr)
+        return -1;
+      else
+        break;
+    }
+
+    *read_pos++ = c;
+    nchars_avail--;
+
+    if (c == '\n')
+      /* Return the line.  */
+      break;
+  }
+
+  /* Done - NUL terminate and return the number of chars read.  */
+  *read_pos = '\0';
+  return read_pos - *lineptr;
+}
+#endif
 
 static struct conn_buffer
 parse_input(void)
@@ -264,13 +423,13 @@ parse_input(void)
 
     buf.n_conns += 1;
     if (buf.n_conns >= bufcap) {
-      bufcap *= 2;
+      bufcap = bufcap * 3 / 2;
       buf.conns = xreallocarray(buf.conns, bufcap, sizeof(struct conn_data));
     }
   }
 
-  if (ferror(stdin))
-    fatal_perror("getline(stdin)");
+  if (!feof(stdin))
+    fatal_perror("stdin");
   return buf;
 }
 
@@ -279,7 +438,6 @@ print_results(const struct conn_buffer *buf)
 {
   const struct conn_data *cn, *limit;
   char pton_buf[INET_ADDRSTRLEN];
-  struct timespec delta;
 
   for (cn = buf->conns, limit = cn + buf->n_conns; cn < limit; cn++) {
     if (inet_ntop(AF_INET, &cn->addr.sin_addr, pton_buf, INET_ADDRSTRLEN)
@@ -287,9 +445,7 @@ print_results(const struct conn_buffer *buf)
       fatal_perror("inet_ntop");
 
     printf("%s %u %d ", pton_buf, ntohs(cn->addr.sin_port), cn->errnm);
-
-    delta = timespec_minus(cn->end, cn->begin);
-    timespec_print_decimal_seconds(stdout, &delta);
+    clock_print_decimal_seconds(stdout, cn->end - cn->begin);
     putchar('\n');
   }
 }
@@ -325,8 +481,8 @@ nonblocking_tcp_socket(void)
 static void
 perform_probes(struct conn_buffer *buf,
                unsigned int parallel,
-               struct timespec spacing,
-               struct timespec timeout)
+               uint64_t spacing,
+               uint64_t timeout_ns)
 {
   /* The 'pollvec' array has one more entry than necessary so that
      memmove()s below work as expected when the array is full. */
@@ -344,14 +500,14 @@ perform_probes(struct conn_buffer *buf,
   int n_pending = 0;
   struct conn_data *cn = buf->conns;
   struct conn_data *limit = cn + buf->n_conns;
-  struct timespec now;
-  struct timespec last_conn = { 0, 0 };
-  int spacing_m = timespec_to_millis(spacing);
+  uint64_t now;
+  uint64_t last_conn = 0;
+  poll_timeout timeout = clock_to_timeout(timeout_ns);
 
   while (cn < limit || n_pending) {
-    clock_gettime(CLOCK_MONOTONIC, &now);
+    now = clock_monotonic();
     if ((unsigned)n_pending < parallel && cn < limit &&
-        timespec_isless(spacing, timespec_minus(now, last_conn))) {
+        now - last_conn >= spacing) {
 
       int sock = nonblocking_tcp_socket();
       if ((unsigned)sock > parallel + 3)
@@ -360,7 +516,7 @@ perform_probes(struct conn_buffer *buf,
       n_pending++;
       pending[sock] = cn;
       cn++;
-      clock_gettime(CLOCK_MONOTONIC, &pending[sock]->begin);
+      pending[sock]->begin = clock_monotonic();
       errno = 0;
       if (!connect(sock, (struct sockaddr *)&pending[sock]->addr,
                    sizeof(struct sockaddr_in))
@@ -370,7 +526,7 @@ perform_probes(struct conn_buffer *buf,
           || errno == ETIMEDOUT
           || errno == ECONNRESET) {
         /* The connection attempt resolved before connect() returned. */
-        clock_gettime(CLOCK_MONOTONIC, &pending[sock]->end);
+        pending[sock]->end = clock_monotonic();
         pending[sock]->errnm = errno;
         pending[sock] = 0;
         n_pending--;
@@ -388,10 +544,10 @@ perform_probes(struct conn_buffer *buf,
       }
     }
 
-    int nready = poll(pollvec, n_pending, spacing_m);
+    int nready = clock_poll(pollvec, n_pending, timeout);
     if (nready < 0)
       fatal_perror("poll");
-    clock_gettime(CLOCK_MONOTONIC, &now);
+    now = clock_monotonic();
 
     /* Inspect all of the pending sockets for both readiness and timeout. */
     for (int i = 0; i < n_pending; i++) {
@@ -404,7 +560,7 @@ perform_probes(struct conn_buffer *buf,
         getsockopt(pollvec[i].fd, SOL_SOCKET, SO_ERROR, &cp->errnm, &optlen);
         to_close = true;
 
-      } else if (timespec_isless(timeout, timespec_minus(now, cp->begin))) {
+      } else if (now - cp->begin >= timeout_ns) {
         cp->end = now;
         cp->errnm = ETIMEDOUT;
         to_close = true;
@@ -422,21 +578,24 @@ perform_probes(struct conn_buffer *buf,
   }
 }
 
-/* clean up in case parent is sloppy */
-/* only a few Unixes have a sane way to do this */
+/* Clean up in case parent is sloppy.  A portability nuisance. */
 static void
-close_unnecessary_fds(const struct rlimit *rl)
+close_unnecessary_fds(int maxfd)
 {
   /* Some but not all of the BSDs have this very sensible fcntl()
-     operation.  Some BSDs also or instead offer a closefrom() system
-     call but there is no good way to know whether it exists. */
-#ifdef F_CLOSEM
+     operation.  Some BSDs instead offer a closefrom() system call;
+     only try that if F_CLOSEM is unavailable, because when *both* are
+     available, the latter is probably implemented using the former.  */
+#if defined F_CLOSEM
   if (fcntl(3, F_CLOSEM, 0) == 0)
+    return;
+#elif defined HAVE_CLOSEFROM
+  if (closefrom(3) == 0)
     return;
 #endif
 
-  /* Linux does not have F_CLOSEM as of this writing, but it does let
-     you enumerate all open file descriptors via /proc. */
+  /* Linux does not have F_CLOSEM or closefrom as of this writing, but
+     it does let you enumerate all open file descriptors via /proc. */
   DIR *fdir = opendir("/proc/self/fd");
   if (fdir) {
     int dfd = dirfd(fdir);
@@ -463,7 +622,7 @@ close_unnecessary_fds(const struct rlimit *rl)
   } else {
     /* Failing all the above, the least bad option is to iterate over all
        _possibly_ open file descriptor numbers and close them blindly. */
-    for (int fd = 3; fd < (int)rl->rlim_max; fd++)
+    for (int fd = 3; fd < maxfd; fd++)
       close(fd);
   }
 }
@@ -479,16 +638,17 @@ main(int argc, char **argv)
   if (getrlimit(RLIMIT_NOFILE, &rl))
     fatal_perror("getrlimit");
 
-  close_unnecessary_fds(&rl);
   unsigned int parallel = xstrtoul(argv[1], 1, rl.rlim_cur - 3,
                                    "parallel setting");
-
-  struct timespec spacing =
-    timespec_parse_decimal_seconds(argv[2], "spacing setting");
-  struct timespec timeout =
-    timespec_parse_decimal_seconds(argv[3], "timeout setting");
+  uint64_t spacing =
+    clock_parse_decimal_seconds(argv[2], "spacing setting");
+  uint64_t timeout =
+    clock_parse_decimal_seconds(argv[3], "timeout setting");
 
   struct conn_buffer buf = parse_input();
+
+  clock_init();
+  close_unnecessary_fds((int) rl.rlim_max);
   perform_probes(&buf, parallel, spacing, timeout);
   print_results(&buf);
   return 0;

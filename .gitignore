@@ -3,10 +3,16 @@ __pycache__/
 *.py[cod]
 *$py.class
 
-# C extensions
+# C compilation and related
 *.so
 *.o
 client/probe-core
+client/config.h
+client/Makefile
+client/config.log
+client/config.cache
+client/config.status
+client/autom4te.cache/
 
 # Probe sets and probe results
 *.csv

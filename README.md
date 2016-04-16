@@ -83,6 +83,6 @@ number but not its IP address.
 
 
 [website]: https://hacks.owlfolio.org/active-geo/
-[client]: https://github.com/...
+[client]: https://github.com/zackw/active-geolocator/tree/master/client
 [Python]: https://www.python.org/
-[file an issue]: https://github.com/...
+[file an issue]: https://github.com/zackw/active-geolocator/issues/new

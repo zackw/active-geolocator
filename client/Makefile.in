@@ -1,27 +1,44 @@
 # @configure_input@
 
-CC       = @CC@
-CFLAGS   = @CFLAGS@
-CPPFLAGS = @CPPFLAGS@
-LDFLAGS  = @LDFLAGS@
-LIBS     = @LIBS@
-O        = @OBJEXT@
-X        = @EXEEXT@
+CC          = @CC@
+CFLAGS      = @CFLAGS@
+WARN_CFLAGS = @WARN_CFLAGS@
+CPPFLAGS    = @CPPFLAGS@
+LDFLAGS     = @LDFLAGS@
+LIBS        = @LIBS@
+O           = .@OBJEXT@
+X           = @EXEEXT@
 
-LDCMD    = $(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS)
-CCCMD    = $(CC) $(CPPFLAGS) $(CFLAGS) -c
+LDCMD       = $(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS)
+CCCMD       = $(CC) $(CPPFLAGS) $(CFLAGS) $(WARN_CFLAGS) -c
 
 all: probe-core$X
 
-probe-core$X: probe-core.$O
-	$(LDCMD) -o probe-core$X probe-core.$O $(LIBS)
+probe-core$X: probe-core$O
+	$(LDCMD) -o probe-core$X probe-core$O $(LIBS)
 
 probe-core$O: probe-core.c config.h
 	$(CCCMD) -o probe-core$O probe-core.c
 
 clean:
-	-rm -f probe-core.$O probe-core$X
+	-rm -f probe-core$O probe-core$X
 distclean: clean
 	-rm -f config.h config.status Makefile
+
+## configuration rebuild rules
+Makefile: Makefile.in config.status
+	./config.status Makefile
+
+config.h: config.h.in config.status
+	./config.status config.h && touch config.h
+
+config.status: configure
+	./config.status --recheck
+
+configure: configure.ac
+	autoconf
+
+config.h.in: configure.ac
+	autoheader --force
 
 .PHONY: all clean distclean

@@ -51,16 +51,20 @@
 #include <time.h>
 #include <unistd.h>
 
-#if !defined HAVE_CLOCK_GETTIME && defined HAVE_MACH_ABSOLUTE_TIME
-#include <mach/mach_time.h>
+#if !defined HAVE_CLOCK_GETTIME
+# if defined HAVE_MACH_ABSOLUTE_TIME
+#  include <mach/mach_time.h>
+# elif defined HAVE_GETTIMEOFDAY
+#  include <sys/time.h>
+# endif
 #endif
 
 #if defined __GNUC__ && __GNUC__ >= 4
-#define NORETURN void __attribute__((noreturn))
-#define PRINTFLIKE __attribute__((format(printf,1,2)))
+# define NORETURN void __attribute__((noreturn))
+# define PRINTFLIKE __attribute__((format(printf,1,2)))
 #else
-#define NORETURN void
-#define PRINTFLIKE /*nothing*/
+# define NORETURN void
+# define PRINTFLIKE /*nothing*/
 #endif
 
 /* Error reporting */
@@ -164,7 +168,7 @@ static uint64_t
 clock_monotonic(void)
 {
   struct timespec t;
-  clock_gettime(CLOCK_MONOTONIC, &ts);
+  clock_gettime(CLOCK_MONOTONIC, &t);
   return ((uint64_t)(t.tv_sec - clock_zero_seconds)) * 1000000000 + t.tv_nsec;
 }
 
@@ -252,7 +256,7 @@ clock_print_decimal_seconds(FILE *fp, uint64_t nsec)
   fprintf(fp, "%f", n);
 }
 
-#ifdef HAVE_PPOLL
+#if defined HAVE_PPOLL
 typedef struct timespec poll_timeout;
 
 static poll_timeout
@@ -270,7 +274,7 @@ clock_poll(struct pollfd fds[], nfds_t nfds, poll_timeout timeout)
   return ppoll(fds, nfds, &timeout, 0);
 }
 
-#elif HAVE_POLL
+#elif defined HAVE_POLL
 typedef int poll_timeout;
 
 static poll_timeout
@@ -308,10 +312,11 @@ struct conn_buffer {
 
 #ifndef HAVE_GETLINE
 /* getline replacement taken from gnulib */
-#define MIN_CHUNK 64
 static int
 getline(char **lineptr, size_t *n, FILE *stream)
 {
+  enum { MIN_CHUNK = 64 };
+
   if (!lineptr || !n || !stream) {
     errno = EINVAL;
     return -1;

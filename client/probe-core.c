@@ -312,7 +312,7 @@ struct conn_buffer {
 
 #ifndef HAVE_GETLINE
 /* getline replacement taken from gnulib */
-static int
+static ssize_t
 getline(char **lineptr, size_t *n, FILE *stream)
 {
   enum { MIN_CHUNK = 64 };
@@ -331,7 +331,7 @@ getline(char **lineptr, size_t *n, FILE *stream)
     }
   }
 
-  int nchars_avail = *n - offset;
+  int nchars_avail = *n;
   char *read_pos = *lineptr;
 
   for (;;) {
@@ -404,7 +404,7 @@ parse_input(void)
     cn->addr.sin_family = AF_INET;
 
     char *p = linebuf;
-    while (*p && !isspace(*p)) p++;
+    while (*p && !isspace((unsigned char)*p)) p++;
     if (!*p)
       fatal_printf("incomplete input line (looking for addr): '%s'", linebuf);
 
@@ -416,7 +416,7 @@ parse_input(void)
       fatal_eprintf("invalid IPv4 address: '%s'", linebuf);
 
     *p = ' ';
-    do p++; while (isspace(*p));
+    do p++; while (isspace((unsigned char)*p));
     char *q = p;
     while (*q && *q != '\n') q++;
     if (*q != '\n')
@@ -588,15 +588,14 @@ static void
 close_unnecessary_fds(int maxfd)
 {
   /* Some but not all of the BSDs have this very sensible fcntl()
-     operation.  Some BSDs instead offer a closefrom() system call;
-     only try that if F_CLOSEM is unavailable, because when *both* are
-     available, the latter is probably implemented using the former.  */
+     operation.  Some other BSDs instead offer a closefrom() system
+     call, which, unlike the fcntl(), cannot fail. */
 #if defined F_CLOSEM
   if (fcntl(3, F_CLOSEM, 0) == 0)
     return;
 #elif defined HAVE_CLOSEFROM
-  if (closefrom(3) == 0)
-    return;
+  closefrom(3);
+  return;
 #endif
 
   /* Linux does not have F_CLOSEM or closefrom as of this writing, but

@@ -83,6 +83,7 @@ def report_results(cfg, results):
 
     # Push the data to the server.
     try:
+        sys.stderr.write("Reporting results to server...")
         with urlopen(cfg.results_url, urlencode([('blob', blob)])) as f:
             # The expected response is code 204 and no output.
             code = f.getcode()
@@ -98,6 +99,8 @@ def report_results(cfg, results):
     except URLError as e:
         sys.stderr.write("\n{}:\n   {}\n".format(cfg.landmark_url, e))
         sys.exit(1)
+
+    sys.stderr.write("done.\nThank you for your assistance.\n")
 
 def perform_probes(cfg, addresses):
     """Make a connection to each of the ADDRESSES, in order, and measure

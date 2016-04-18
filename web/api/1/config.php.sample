@@ -5,7 +5,7 @@
 
 $ENCRYPT_TO = "<fill in a GPG key id>";
 
-$BASEDIR    = $_ENV["HOME"] . "/active-geo/"
+$BASEDIR    = $_ENV["HOME"] . "/active-geo/";
 
 $LANDMARKS  = $BASEDIR . "landmarks.csv";
 $REPORT_DIR = $BASEDIR . "reports";

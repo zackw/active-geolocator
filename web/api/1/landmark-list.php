@@ -1,6 +1,4 @@
 <?php
-include("config.php");
-
 function error_handler($errno, $errstr, $errfile, $errline) {
     http_response_code(500);
     header("Content-Type: text/plain;charset=utf-8");
@@ -9,6 +7,8 @@ function error_handler($errno, $errstr, $errfile, $errline) {
 }
 error_reporting(0);
 set_error_handler("error_handler");
+
+include("config.php");
 
 $fp = fopen($LANDMARKS, "r");
 $data = [];

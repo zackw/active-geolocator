@@ -2,128 +2,316 @@
 
 from __future__ import division
 
-import os
-import sys
-
-
 import argparse
-import csv
+import contextlib
+import datetime
 import errno
+import json
+import os
 import random
 import socket
 import subprocess
+import sys
+import time
 
-def perform_probes(addresses, spacing, parallel, timeout, wr):
+try:
+    import configparser
+except ImportError:
+    import ConfigParser as configparser
+
+try:
+    from urllib.error import URLError
+    from urllib.parse import urlencode
+    from urllib.request import urlopen
+except ImportError:
+    from urllib2 import URLError
+    from urllib import urlencode
+    from urllib2 import urlopen as _urlopen
+    def urlopen(*a, **k):
+        return contextlib.closing(_urlopen(*a, **k))
+
+def report_results(cfg, results):
+    data = dict(vars(cfg))
+    # We don't need to report all of the configuration parameters.
+    del data["landmark_url"]
+    del data["results_url"]
+    del data["config"]
+    if data["location_unknown"]:
+        del data["latitude"]
+        del data["longitude"]
+    else:
+        del data["location_unknown"]
+
+    if data["proxied_connection"]:
+        if data["proxy_location_unknown"]:
+            del data["proxy_latitude"]
+            del data["proxy_longitude"]
+        else:
+            del data["proxy_location_unknown"]
+    else:
+        del data["proxy_latitude"]
+        del data["proxy_longitude"]
+        del data["proxy_location_unknown"]
+
+    data["results"] = results
+    now = datetime.datetime.utcnow()
+    data["timestamp"] = now.isoformat()
+    blob = json.dumps(data, separators=(',', ':')).encode('utf-8')
+
+    # Save the data to a file in the current directory.
+    tmpl = now.strftime("probe-result-%Y-%m-%d-{:03d}.json")
+    for i in range(1000):
+        try:
+            # O_EXCL is not accessible via plain open() in py2.
+            fd = os.open(tmpl.format(i), os.O_WRONLY|os.O_CREAT|os.O_EXCL)
+            with os.fdopen(fd, "wt") as f:
+                f.write(blob)
+                f.write("\n")
+            break
+
+        except OSError as e:
+            if e.errno == errno.EEXIST:
+                continue
+            sys.stderr.write(
+                "Unable to record data locally ({}: {}); continuing.\n"
+                .format(e.filename, e.strerror))
+            break
+    else:
+        sys.stderr.write(
+            "Unable to record data locally (too many local records already); "
+            "continuing.\n")
+
+    # Push the data to the server.
+    try:
+        with urlopen(cfg.results_url, urlencode([('blob', blob)])) as f:
+            # The expected response is code 204 and no output.
+            code = f.getcode()
+            body = f.read()
+            if code != 204 or body != "":
+                sys.stderr.write(
+                    "unexpected response to POST {}:\n"
+                    "  code    = {}\n"
+                    "  headers = {!r}\n"
+                    "  body    = {!r}\n"
+                    .format(code, f.info().headers, body))
+                sys.exit(1)
+    except URLError as e:
+        sys.stderr.write("\n{}:\n   {}\n".format(cfg.landmark_url, e))
+        sys.exit(1)
+
+def perform_probes(cfg, addresses):
     """Make a connection to each of the ADDRESSES, in order, and measure
     the time for connect(2) to either succeed or fail -- we don't care
     which.  Each element of the iterable ADDRESSES should be a 2-tuple
-    (addr, port) as returned by socket.getaddrinfo().  Successive
-    connections will be no closer to each other in time than SPACING
-    floating-point seconds.  No more than PARALLEL concurrent
-    connections will occur at any one time.  Sockets that have neither
-    succeeded nor failed to connect after TIMEOUT floating-point
-    seconds will be treated as having failed.  No data is transmitted;
-    each socket is closed immediately after the connection resolves.
-
-    The results are written to the csv.writer object WR; each row of the
-    file will be <host address>,<elapsed time> (where <host address> is
-    addr[4][0] for some element ADDR of ADDRESSES).
-
-    """
-
-    if timeout <= 0:
-        raise ValueError("timeout must be positive")
-    if spacing <= 0:
-        raise ValueError("spacing must be positive")
-    if parallel < 1:
-        raise ValueError("parallel must be at least 1")
+    (addr, port) as returned by socket.getaddrinfo()."""
 
     thisdir = os.path.dirname(os.path.abspath(__file__))
     probecore = os.path.join(thisdir, "probe-core")
 
-    cmd = [probecore, str(parallel), str(spacing), str(timeout)]
-    proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE)
+    cmd = [probecore, str(cfg.parallel), str(cfg.spacing), str(cfg.timeout)]
 
-    for host, port in addresses:
-        proc.stdin.write("{} {}\n".format(host, port))
-    proc.stdin.close()
+    start = time.time()
+    try:
+        proc = subprocess.Popen(cmd,
+                                stdin=subprocess.PIPE,
+                                stdout=subprocess.PIPE)
 
+        for host, port in addresses:
+            proc.stdin.write("{} {}\n".format(host, port))
+        proc.stdin.close()
+
+    except Exception as e:
+        sys.stderr.write("error while starting probe-core: {}\n"
+                         .format(e))
+        sys.exit(1)
+
+    sys.stderr.write("Performing RTT measurements...\n")
+
+    results = []
+    ok = True
     for meas in proc.stdout:
-        host, port, err, elapsed = meas.split()
-        wr.writerow((host, port, errno.errorcode.get(err, err), elapsed))
+        try:
+            host, port, err, elapsed = meas.split()
+            results.append((host, port, errno.errorcode.get(err, err), elapsed))
+        except Exception as e:
+            sys.stderr.write("probe-core: unexpected output: {!r} ({})\n"
+                             .format(meas, e))
+            ok = False
 
     rc = proc.wait()
     if rc:
-        raise CalledProcessError(rc, cmd)
+        msg = "probe-core exited unsuccessfully (code {:04x})"
+        if hasattr(os, "WIFEXITED"):
+            if os.WIFEXITED(rc):
+                msg = "probe-core exited unsuccessfully (code {})\n"
+                rc = os.WEXITSTATUS(rc)
+            elif os.WIFSIGNALED(rc):
+                msg = "probe-core killed by signal {}\n"
+                rc = os.WTERMSIG(rc)
+        sys.stderr.write(msg.format(rc))
+        sys.exit(1)
 
-def choose_probe_order(addresses):
-    """Choose a randomized probe order for the addresses ADDRS.
+    if not ok:
+        sys.exit(1)
 
-    Unlike perform_probes, ADDRESSES is expected to be a list of
-    3-tuples (count, host, port) where COUNT is the number of times to
-    probe HOST at PORT.
+    stop = time.time()
+    h, m = divmod(stop - start, 3600)
+    m, s = divmod(m, 60)
+    sys.stderr.write("RTT measurements completed in {:d}h {:02d}m {:05.2f}s.\n"
+                     .format(int(h), int(m), s))
 
-    The return value is a list acceptable as the ADDRESSES argument to
-    perform_probes."""
+    return results
 
-    remaining = {}
-    last_appearance = {}
-    for count, host, port in addresses:
-        raddr = socket.getaddrinfo(
-            host, port, 0, socket.SOCK_STREAM, 0, 0)[0][4]
-        remaining[raddr] = count
-        last_appearance[raddr] = -1
+def choose_probe_order(cfg, addresses):
+    """Choose a randomized probe order for the ADDRESSES.  This both expands
+    the list to include CFG.nprobes copies of each address, and shuffles it.
+    It tries not to put multiple copies of the same address close to each
+    other."""
 
     rv = []
-    deadcycles = 0
-    while remaining:
-        ks = list(remaining.keys())
-        x = random.choice(ks)
-        last = last_appearance[x]
-        if last == -1 or (len(rv) - last) >= (len(ks) // 4):
-            last_appearance[x] = len(rv)
-            rv.append(x)
-            remaining[x] -= 1
-            if not remaining[x]:
-                del remaining[x]
-            deadcycles = 0
-        else:
-            deadcycles += 1
-            if deadcycles == 10:
-                raise RuntimeError("choose_probe_order: 10 dead cycles\n"
-                                   "remaining: {!r}\n"
-                                   "last_appearance: {!r}\n"
-                                   .format(remaining, last_appearance))
+    for _ in range(cfg.nprobes):
+        random.shuffle(addresses)
+        rv.extend(addresses)
+
     return rv
 
-def load_addresses(ifname):
-    """Read addresses to probe from IFNAME.  This is expected to be a
-    CSV file with columns named "host", "port", and "nprobes"; any
-    other columns are ignored.
+def validate_landmark_list(landmarks):
+    def v1(item):
+        try:
+            if len(item) != 2:
+                raise ValueError("wrong length")
+            return socket.getaddrinfo(
+                item[0], item[1], 0, socket.SOCK_STREAM, 0, 0)[0][4]
+
+        except Exception as e:
+            raise type(e)("validating landmark list: item {!r}: {}"
+                          .format(item, e))
+
+    if not isinstance(landmarks, list):
+        raise TypeError("landmark list was not a list, but {!r}"
+                        .format(landmarks))
+
+    return [v1(item) for item in landmarks]
+
+def get_landmark_list(cfg):
+    """Read addresses to probe from cfg.landmark_url."""
+    try:
+        sys.stderr.write("Retrieving landmark list...")
+        sys.stderr.flush()
+        with urlopen(cfg.landmark_url) as f:
+            landmarks = validate_landmark_list(json.load(f))
+            sys.stderr.write("ok, {} landmarks\n".format(len(landmarks)))
+            return landmarks
+
+    except (URLError, TypeError, ValueError, UnicodeError) as e:
+        sys.stderr.write("\n{}:\n   {}\n".format(cfg.landmark_url, e))
+        sys.exit(1)
+
+def parse_local_config_file(args):
+    """Read the local config file, which tells us where to contact the
+       server and specifies probe parameters.  For convenience,
+       everything we get out of the config file is merged into the
+       same attribute bag as the command line arguments.
     """
-    with open(ifname, "rt") as f:
-        rd = csv.DictReader(f)
-        return [
-            (int(r["nprobes"]), r["host"], int(r["port"]))
-            for r in rd
-        ]
+    try:
+        with open(args.config) as f:
+            p = configparser.RawConfigParser()
+            p.readfp(f)
+
+            setattr(args, "landmark_url", p.get("probe", "landmark_url"))
+            setattr(args, "results_url", p.get("probe", "results_url"))
+            setattr(args, "spacing", p.getfloat("probe", "spacing"))
+            setattr(args, "parallel", p.getint("probe", "parallel"))
+            setattr(args, "timeout", p.getfloat("probe", "timeout"))
+            setattr(args, "nprobes", p.getint("probe", "n_probes"))
+
+            # Fewer than one connection at a time obviously doesn't
+            # work.  We also impose an artificial upper limit to
+            # minimize the odds of running into the _real_ limit,
+            # which is the kernel-imposed number of open files per
+            # process, minus 3.
+            if args.parallel < 1 or args.parallel > 100:
+                raise ValueError("'parallel' must be from 1 to 100")
+
+            # poll(2) takes its timeout in milliseconds, so a timeout
+            # smaller than one millisecond is impossible (probe-core
+            # *could* be using ppoll, but we don't know that).  We
+            # impose an artificial upper limit here of one minute.
+            if args.timeout < 0.0001 or args.timeout > 60:
+                raise ValueError("'timeout' must be from 0.0001 to 60")
+
+            # spacings smaller than one millisecond are impossible for the
+            # same reason as above, and it doesn't make sense for the spacing
+            # to be bigger than the timeout.
+            if args.spacing < 0.0001 or args.spacing > args.timeout:
+                raise ValueError("'spacing' must be from 0.0001 to timeout")
+
+            # Less than one probe per landmark doesn't make sense, and more
+            # than 20 is unlikely to be helpful/
+            if args.nprobes < 1 or args.nprobes > 20:
+                raise ValueError("'nprobes' must be from 1 to 20")
+
+            return args
+
+    except (configparser.Error, ValueError) as e:
+        sys.stderr.write("{}: parse error: {}\n".format(args.config, e))
+        sys.exit(1)
+
+    except OSError as e:
+        sys.stderr.write("{}: {}\n".format(args.config, e.strerror))
+        sys.exit(1)
+
+def parse_command_line():
+    ap = argparse.ArgumentParser(
+        description="Make round-trip time measurements."
+    )
+
+    ap.add_argument("-c", "--config", default="probe.cf",
+                    help="Local configuration file (default: probe.cf)")
+
+    ap.add_argument("--latitude", type=float, metavar="LAT",
+                    help="Latitude of this computer (decimal degrees)")
+    ap.add_argument("--longitude", type=float, metavar="LON",
+                    help="Longitude of this computer (decimal degrees)")
+    ap.add_argument("--location-unknown", action="store_true",
+                    help="Location of this computer is unknown")
+
+    ap.add_argument("--proxy-latitude", type=float, metavar="LAT",
+                    help="Latitude of the network proxy (decimal degrees)")
+    ap.add_argument("--proxy-longitude", type=float, metavar="LON",
+                    help="Longitude of the network proxy (decimal degrees)")
+    ap.add_argument("--proxy-location-unknown", action="store_true",
+                    help="Location of the network proxy is unknown")
+
+    args = ap.parse_args()
+    if ((not args.location_unknown
+         and (args.latitude is None or args.longitude is None))
+        or (args.location_unknown
+            and (args.latitude is not None or args.longitude is not None))):
+        ap.error("must specify both --latitude and --longitude, "
+                 "or else --location-unknown")
+    if (not args.proxy_location_unknown
+        and args.proxy_latitude is None
+        and args.proxy_longitude is None):
+        setattr(args, "proxied_connection", False)
+    else:
+        setattr(args, "proxied_connection", True)
+        if ((not args.proxy_location_unknown
+             and (args.proxy_latitude is None or args.proxy_longitude is None))
+            or (args.proxy_location_unknown
+                and (args.proxy_latitude is not None
+                     or args.proxy_longitude is not None))):
+            ap.error("must specify both --proxy-latitude and "
+                     "--proxy-longitude, or else --proxy-location-unknown")
+
+    return args
 
 def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("input", help="Input file name (see load_addresses)")
-    ap.add_argument("output", help="Output file name (see perform_probes)")
-    ap.add_argument("-s", "--spacing", type=float, default=0.1,
-                    help="Time between successive probes (default: 0.1s)")
-    ap.add_argument("-p", "--parallel", type=int, default=1,
-                    help="Number of concurrent probes to perform (default: 1)")
-    ap.add_argument("-t", "--timeout", type=float, default=10,
-                    help="Connection timeout (default: 10s)")
-    args = ap.parse_args()
-
-    addrs = choose_probe_order(load_addresses(args.input))
-    with open(args.output, "wt") as f:
-        wr = csv.writer(f, quoting=csv.QUOTE_MINIMAL, lineterminator='\n')
-        wr.writerow(("host","port","status","elapsed"))
-        perform_probes(addrs, args.spacing, args.parallel, args.timeout, wr)
+    args = parse_command_line()
+    cfg = parse_local_config_file(args)
+    landmarks = get_landmark_list(cfg)
+    addrs = choose_probe_order(cfg, landmarks)
+    results = perform_probes(cfg, addrs)
+    report_results(cfg, results)
 
 main()

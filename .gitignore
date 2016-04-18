@@ -16,6 +16,7 @@ client/autom4te.cache/
 
 # Probe sets and probe results
 *.csv
+client/probe-result-*.json
 
 # Editor junk
 .#*

@@ -98,6 +98,15 @@ def report_results(cfg, results):
                 sys.exit(1)
     except URLError as e:
         sys.stderr.write("\n{}:\n   {}\n".format(cfg.landmark_url, e))
+        try:
+            sys.stderr.write("   reason: {}\n".format(e.reason))
+            sys.stderr.write("   body:\n")
+            sys.stderr.write(e.read())
+            sys.stderr.write("\n")
+        except Exception as ee:
+            sys.stderr.write("   (dumping details failed: {})\n"
+                             .format(ee))
+            pass
         sys.exit(1)
 
     sys.stderr.write("done.\nThank you for your assistance.\n")

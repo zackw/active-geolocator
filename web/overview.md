@@ -15,7 +15,8 @@ at a predictable speed (roughly half the speed of light in vacuum) so
 we can, in principle, just convert each round-trip time to a distance,
 draw a bunch of circles on a map, and find their intersection.  In
 practice, there are complications, but algorithms to deal with them
-have been floating around the literature for over a decade. [[a]][] [[b]][]
+have been floating around the literature for over a decade: [Octant][]
+is probably the best-known, and there are dozens of refinements.
 
 ## Why are we doing this?
 
@@ -46,8 +47,10 @@ constant factor; is it enough to just subtract that off?  And what is
 the right way to estimate the constant factor?
 
 The databases, meanwhile, _seem_ accurate enough, usually, but they
-are known to have problems [[x]][] [[y]][], and the companies that
-compile them will not share their methodology.  ...
+are known to have problems [[1]][] [[2]][], and the companies that
+compile them will not share their methodology.  By cross-checking the
+databases with self-reported and measured locations, we hope to
+quantify how likely the databases are to be in error, and by how much.
 
 ## How can you help?
 
@@ -111,15 +114,15 @@ remote peers.
 Once all the measurements are made, the results are transmitted back
 to this website along with your computer's IP address and reported
 location.  If you took measurements via a proxy, the proxy's IP
-address and location are also transmitted.  The IP address(es) are
-immediately used to look up the [autonomous system(s)][] hosting the
-computer(s) and are then discarded.
+address and location are also transmitted.
 
 All of the submitted data is stored either encrypted or on computers
 under our physical control.  We may publish the data set in the
 future; if we do, it will include your computer's location and AS
 number but not its IP address.
 
-[geolocation]:
-[ag-repo]:
-[autonomous system(s)]:
+[geolocation]: https://www.iplocation.net/
+[Octant]: https://www.cs.cornell.edu/~bwong/octant/overview.html
+[ag-repo]: https://github.com/zackw/active-geolocator
+[[1]]: http://www.sigcomm.org/sites/default/files/ccr/papers/2011/April/1971162-1971171.pdf
+[[2]]: http://fusion.net/story/287592/internet-mapping-glitch-kansas-farm/

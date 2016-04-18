@@ -39,14 +39,18 @@ repository:
     $ make
     $ ./probe --latitude=<LATITUDE> --longitude=<LONGITUDE>
 
-The results are automatically uploaded to the project website, and are
-also written to a file `probe-result-YYYY-MM-DD-N.json`.
+The final `probe` command can take two or three hours to run.  It
+reports its progress once a minute.  The results are automatically
+uploaded to the project website, and are also written to a file
+`probe-result-YYYY-MM-DD-N.json`.
 
-`<LATITUDE>` and `<LONGITUDE>` should be in decimal degrees, using
-negative numbers for south of the equator / west of Greenwich).
+`<LATITUDE>` and `<LONGITUDE>` should be in decimal degrees; use
+negative numbers for south of the equator / west of Greenwich.
 
-If you are running the client through a VPN proxy, you need to specify
-the proxy's latitude and longitude _as well as_ the client computer's:
+The client will work if run through a VPN proxy (_not_ a SOCKS or HTTP
+proxy), and we're very interested in measurements taken that way;
+however, you need to specify the proxy's latitude and longitude _as
+well as_ the client computer's:
 
     $ ./probe --latitude=<CLIENT LAT> --longitude=<CLIENT LONG> \
               --proxy-latitude=<PROXY LAT> --proxy-longitude=<PROXY LONG>
@@ -73,10 +77,9 @@ remote peers.
 
 Once all the measurements are made, the results are transmitted back
 to this website along with your computer's IP address and reported
-location.  If you took measurements via a proxy, the proxy's IP
-address and location are also transmitted.  The IP address(es) are
-immediately used to look up the [autonomous system(s)][] hosting the
-computer(s) and are then discarded.
+location.  If you took measurements via a proxy, we don't learn your
+computer's IP address but we do learn the proxy's, and we learn both
+computers' physical locations.
 
 All of the submitted data is stored either encrypted or on computers
 under our physical control.  We may publish the data set in the
@@ -85,6 +88,6 @@ number but not its IP address.
 
 
 [website]: https://hacks.owlfolio.org/active-geo/
-[client]: https://github.com/zackw/active-geolocator/tree/master/measurement-client
+[measurement-client]: https://github.com/zackw/active-geolocator/tree/master/measurement-client
 [Python]: https://www.python.org/
 [file an issue]: https://github.com/zackw/active-geolocator/issues/new

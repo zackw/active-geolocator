@@ -256,6 +256,18 @@ clock_print_decimal_seconds(FILE *fp, uint64_t nsec)
   fprintf(fp, "%f", n);
 }
 
+static void
+clock_print_elapsed(FILE *fp, uint64_t nsec)
+{
+  unsigned int h, m;
+  double s;
+  double a = ((double)nsec) * 1e-9;
+  h = (unsigned int)floor(a / 3600);
+  m = (unsigned int)floor(fmod(a, 3600) / 60);
+  s = fmod(a, 60);
+  fprintf(fp, "%uh %02um %06.3fs", h, m, s);
+}
+
 #if defined HAVE_PPOLL
 typedef struct timespec poll_timeout;
 
@@ -484,6 +496,14 @@ nonblocking_tcp_socket(void)
 }
 
 static void
+progress_report(uint64_t now, size_t n_conns, size_t n_proc, int n_pending)
+{
+  clock_print_elapsed(stderr, now);
+  fprintf(stderr, ": %zu/%zu probes complete, %u in progress\n",
+          n_proc - (unsigned)n_pending, n_conns, n_pending);
+}
+
+static void
 perform_probes(struct conn_buffer *buf,
                unsigned int parallel,
                uint64_t spacing,
@@ -507,10 +527,18 @@ perform_probes(struct conn_buffer *buf,
   struct conn_data *limit = cn + buf->n_conns;
   uint64_t now;
   uint64_t last_conn = 0;
+  uint64_t last_progress_report = 0;
   poll_timeout timeout = clock_to_timeout(timeout_ns);
 
   while (cn < limit || n_pending) {
     now = clock_monotonic();
+    /* Issue a progress report once a minute.  */
+    if (last_progress_report == 0 ||
+        now - last_progress_report > 60 * 1000000000ull) {
+      progress_report(now, buf->n_conns, cn - buf->conns, n_pending);
+      last_progress_report = now;
+    }
+
     if ((unsigned)n_pending < parallel && cn < limit &&
         now - last_conn >= spacing) {
 

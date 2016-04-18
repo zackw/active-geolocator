@@ -7,17 +7,20 @@ project.
 ## Running the measurement client
 
 If you came here _from_ the website, you're probably interested in
-running the measurement client, which is in the [`client`][client]
-subdirectory of this repository.
+running the measurement client, which is in the
+[`measurement-client`][measurement-client] subdirectory of this
+repository.
 
 It's very important that you only run the client if you are willing to
 tell me the latitude and longitude of the computer you're running it
-on, to at least two decimal places of accuracy (this is roughly 1km of
-uncertainty).  _Don't_ look your IP address up in a geolocation
-service to get this information.  Looking up the postal address is
-usually OK, as long as the post office delivers mail directly to your
-building.  Locations measured by a GPS receiver (such as most
-smartphones nowadays) are better.
+on, to at least 1/100 of a degree (roughly half an arcminute, or 1km
+of position uncertainty).  _Don't_ look your IP address up in a
+geolocation service to get this information, because one of the goals
+of this project is to independently audit the accuracy of those
+services.  Looking up the postal address is usually OK, as long as the
+post office delivers mail directly to your building.  Locations
+measured by a GPS receiver (such as most smartphones nowadays) are
+better.
 
 The client has two components, one written in [Python][], the other in
 C.  The C component is self-contained (not a Python module) and is
@@ -31,7 +34,7 @@ Because of the C component, running the client from the command line
 is a three-step procedure.  Starting from a Git checkout of this
 repository:
 
-    $ cd client
+    $ cd measurement-client
     $ ./configure
     $ make
     $ ./probe --latitude=<LATITUDE> --longitude=<LONGITUDE>
@@ -39,9 +42,8 @@ repository:
 The results are automatically uploaded to the project website, and are
 also written to a file `probe-result-YYYY-MM-DD-N.json`.
 
-`<LATITUDE>` and `<LONGITUDE>` should be northing and easting in
-decimal degrees (that is, use negative numbers for south of the
-equator / west of Greenwich).
+`<LATITUDE>` and `<LONGITUDE>` should be in decimal degrees, using
+negative numbers for south of the equator / west of Greenwich).
 
 If you are running the client through a VPN proxy, you need to specify
 the proxy's latitude and longitude _as well as_ the client computer's:
@@ -83,6 +85,6 @@ number but not its IP address.
 
 
 [website]: https://hacks.owlfolio.org/active-geo/
-[client]: https://github.com/zackw/active-geolocator/tree/master/client
+[client]: https://github.com/zackw/active-geolocator/tree/master/measurement-client
 [Python]: https://www.python.org/
 [file an issue]: https://github.com/zackw/active-geolocator/issues/new

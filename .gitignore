@@ -6,17 +6,17 @@ __pycache__/
 # C compilation and related
 *.so
 *.o
-client/probe-core
-client/config.h
-client/Makefile
-client/config.log
-client/config.cache
-client/config.status
-client/autom4te.cache/
+measurement-client/probe-core
+measurement-client/config.h
+measurement-client/Makefile
+measurement-client/config.log
+measurement-client/config.cache
+measurement-client/config.status
+measurement-client/autom4te.cache/
 
 # Probe sets and probe results
 *.csv
-client/probe-result-*.json
+measurement-client/probe-result-*.json
 
 # Editor junk
 .#*

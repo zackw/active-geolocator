@@ -1,8 +1,8 @@
 [probe]
 # URL of the list of addresses to probe.
-landmark_url=https://hacks.owlfolio.org/active-geo/api/1/landmark-list
+landmark_url=https://research.owlfolio.org/active-geo/api/1/landmark-list
 # URL to push results back to.
-results_url=https://hacks.owlfolio.org/active-geo/api/1/probe-results
+results_url=https://research.owlfolio.org/active-geo/api/1/probe-results
 # Time between successive probes (seconds)
 spacing=0.1
 # Number of concurrent probes to perform

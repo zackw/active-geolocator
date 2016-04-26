@@ -12,16 +12,22 @@ X           = @EXEEXT@
 LDCMD       = $(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS)
 CCCMD       = $(CC) $(CPPFLAGS) $(CFLAGS) $(WARN_CFLAGS) -c
 
-all: probe-core$X
+all: probe-core$X probe-core-socks$X
 
 probe-core$X: probe-core$O
 	$(LDCMD) -o probe-core$X probe-core$O $(LIBS)
 
+probe-core-socks$X: probe-core-socks$O
+	$(LDCMD) -o probe-core-socks$X probe-core-socks$O $(LIBS)
+
 probe-core$O: probe-core.c config.h
 	$(CCCMD) -o probe-core$O probe-core.c
 
+probe-core-socks$O: probe-core-socks.c config.h
+	$(CCCMD) -o probe-core-socks$O probe-core.c
+
 clean:
-	-rm -f probe-core$O probe-core$X
+	-rm -f probe-core$O probe-core$X probe-core-socks$O probe-core-socks$X
 distclean: clean
 	-rm -f config.h config.status Makefile
 
@@ -35,10 +41,11 @@ config.h: config.h.in config.status
 config.status: configure
 	./config.status --recheck
 
-configure: configure.ac
-	autoconf
-
-config.h.in: configure.ac
-	autoheader --force
+## uncomment these if you are hacking on the configure script
+#configure: configure.ac
+#	autoconf
+#
+#config.h.in: configure.ac
+#	autoheader --force
 
 .PHONY: all clean distclean

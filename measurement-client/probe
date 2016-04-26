@@ -120,7 +120,14 @@ def perform_probes(cfg, addresses):
     thisdir = os.path.dirname(os.path.abspath(__file__))
     probecore = os.path.join(thisdir, "probe-core")
 
+    if cfg.socks5:
+        probecore += "-socks"
+
     cmd = [probecore, str(cfg.parallel), str(cfg.spacing), str(cfg.timeout)]
+
+    if cfg.socks5:
+        cmd.append(cfg.socks5[0])
+        cmd.append(str(cfg.socks5[1]))
 
     start = time.time()
     try:
@@ -295,6 +302,9 @@ def parse_command_line():
     ap.add_argument("--proxy-location-unknown", action="store_true",
                     help="Location of the network proxy is unknown")
 
+    ap.add_argument("--socks5", metavar="ADDR:PORT",
+                    help="Address of a SOCKSv5 proxy to use.")
+
     args = ap.parse_args()
     if ((not args.location_unknown
          and (args.latitude is None or args.longitude is None))
@@ -315,6 +325,14 @@ def parse_command_line():
                      or args.proxy_longitude is not None))):
             ap.error("must specify both --proxy-latitude and "
                      "--proxy-longitude, or else --proxy-location-unknown")
+
+    if args.socks5:
+        try:
+            args.socks5 = socket.getaddrinfo(
+                *args.socks5.split(":"),
+                socket.AF_UNSPEC, socket.SOCK_STREAM)[0][4]
+        except Exception as e:
+            ap.error("invalid --socks5 argument: " + str(e))
 
     return args
 

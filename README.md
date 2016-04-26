@@ -47,13 +47,20 @@ uploaded to the project website, and are also written to a file
 `<LATITUDE>` and `<LONGITUDE>` should be in decimal degrees; use
 negative numbers for south of the equator / west of Greenwich.
 
-The client will work if run through a VPN proxy (_not_ a SOCKS or HTTP
-proxy), and we're very interested in measurements taken that way;
-however, you need to specify the proxy's latitude and longitude _as
-well as_ the client computer's:
+The client will work if run through a VPN proxy or a SOCKS proxy, and
+we're very interested in measurements taken that way; however, you
+need to specify the proxy's latitude and longitude _as well as_ the
+client computer's:
 
     $ ./probe --latitude=<CLIENT LAT> --longitude=<CLIENT LONG> \
               --proxy-latitude=<PROXY LAT> --proxy-longitude=<PROXY LONG>
+
+If you're using a SOCKS proxy, you have to specify its address on the
+command line:
+
+    $ ./probe --latitude=<CLIENT LAT> --longitude=<CLIENT LONG> \
+              --proxy-latitude=<PROXY LAT> --proxy-longitude=<PROXY LONG> \
+              --socks5 <HOST>:<PORT>
 
 Again, _don't_ look the proxy's IP address up in a geolocation
 service, and _don't_ do this unless you are willing to provide

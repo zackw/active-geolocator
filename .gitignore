@@ -7,6 +7,7 @@ __pycache__/
 *.so
 *.o
 measurement-client/probe-core
+measurement-client/probe-core-socks
 measurement-client/config.h
 measurement-client/Makefile
 measurement-client/config.log

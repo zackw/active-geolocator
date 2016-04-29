@@ -24,7 +24,7 @@ probe-core$O: probe-core.c config.h
 	$(CCCMD) -o probe-core$O probe-core.c
 
 probe-core-socks$O: probe-core-socks.c config.h
-	$(CCCMD) -o probe-core-socks$O probe-core.c
+	$(CCCMD) -o probe-core-socks$O probe-core-socks.c
 
 clean:
 	-rm -f probe-core$O probe-core$X probe-core-socks$O probe-core-socks$X

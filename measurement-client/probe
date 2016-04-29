@@ -158,16 +158,13 @@ def perform_probes(cfg, addresses):
             ok = False
 
     rc = proc.wait()
-    if rc:
-        msg = "probe-core exited unsuccessfully (code {:04x})"
-        if hasattr(os, "WIFEXITED"):
-            if os.WIFEXITED(rc):
-                msg = "probe-core exited unsuccessfully (code {})\n"
-                rc = os.WEXITSTATUS(rc)
-            elif os.WIFSIGNALED(rc):
-                msg = "probe-core killed by signal {}\n"
-                rc = os.WTERMSIG(rc)
-        sys.stderr.write(msg.format(rc))
+    if rc > 0:
+        sys.stderr.write("probe-core exited unsuccessfully (code {})\n"
+                         .format(rc))
+        sys.exit(1)
+    elif rc < 0:
+        sys.stderr.write("probe-core killed by signal {}\n"
+                         .format(-rc))
         sys.exit(1)
 
     if not ok:
@@ -328,8 +325,9 @@ def parse_command_line():
 
     if args.socks5:
         try:
+            host, port = args.socks5.split(":")
             args.socks5 = socket.getaddrinfo(
-                *args.socks5.split(":"),
+                host, port,
                 socket.AF_UNSPEC, socket.SOCK_STREAM)[0][4]
         except Exception as e:
             ap.error("invalid --socks5 argument: " + str(e))

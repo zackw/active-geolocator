@@ -574,7 +574,7 @@ next_action(struct conn_data *cn, int fd, const struct addrinfo *proxy)
   switch (cn->sstate) {
   case NOT_YET_CONNECTED:
     cn->begin = clock_monotonic();
-    if (connect(sock, proxy->ai_addr, proxy->ai_addrlen)) {
+    if (connect(fd, proxy->ai_addr, proxy->ai_addrlen)) {
       if (errno == EINPROGRESS) {
         /* Connection attempt is pending. */
         cn->sstate = CONNECTING;
@@ -589,15 +589,16 @@ next_action(struct conn_data *cn, int fd, const struct addrinfo *proxy)
     } else
       goto connection_established;
 
-  case CONNECTING:
+  case CONNECTING: {
     /* Check for async connection failure.  */
-    optlen = sizeof(cn->errnm);
-    getsockopt(pollvec[i].fd, SOL_SOCKET, SO_ERROR, &cn->errnm, &optlen);
+    socklen_t optlen = sizeof(cn->errnm);
+    getsockopt(fd, SOL_SOCKET, SO_ERROR, &cn->errnm, &optlen);
     if (cn->errnm) {
       cn->end = clock_monotonic();
       cn->sstate = FINISHED;
       return 0;
     }
+  }
 
   connection_established:
     /* Send an unauthenticated SOCKSv5 client handshake. */
@@ -639,8 +640,8 @@ next_action(struct conn_data *cn, int fd, const struct addrinfo *proxy)
        Reset the timer immediately after sending the message;
        everything up to this point was just overhead.  */
     memcpy(dbuf+0, "\x05\x01\x00\x01", 4);
-    memcpy(dbuf+4, cn->addr.sin_addr, 4);
-    memcpy(dbuf+8, cn->addr.sin_port, 2);
+    memcpy(dbuf+4, &cn->addr.sin_addr, 4);
+    memcpy(dbuf+8, &cn->addr.sin_port, 2);
     if (!send_all(fd, 10, dbuf)) {
       cn->begin = clock_monotonic();
       cn->sstate = SENT_DESTINATION;
@@ -773,9 +774,6 @@ perform_probes(struct conn_buffer *buf,
       if ((unsigned)sock > parallel + 3)
         fatal_printf("socket fd %d out of expected range", sock);
 
-      n_pending++;
-      pending[sock] = cn;
-      cn++;
       events = next_action(cn, sock, proxy);
       if (events) {
         /* The connection attempt is pending. */
@@ -898,9 +896,9 @@ main(int argc, char **argv)
 
   struct addrinfo *proxy;
   struct addrinfo hints;
-  memset(hints, 0, sizeof hints);
-  hints->ai_family = AF_UNSPEC;
-  hints->ai_socktype = SOCK_STREAM;
+  memset(&hints, 0, sizeof hints);
+  hints.ai_family = AF_UNSPEC;
+  hints.ai_socktype = SOCK_STREAM;
   int gaierr = getaddrinfo(argv[4], argv[5], &hints, &proxy);
   if (gaierr)
     fatal_printf("error parsing proxy address '%s:%s': %s\n",

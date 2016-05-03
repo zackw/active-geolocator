@@ -1,6 +1,6 @@
 # The 'ageo' package provides algorithms for active geolocation.
 
-from ageo import *
+from .ageo import *
 
-import calibration
-import ranging
+from . import calibration
+from . import ranging

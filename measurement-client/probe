@@ -21,14 +21,64 @@ except ImportError:
 
 try:
     from urllib.error import URLError
-    from urllib.parse import urlencode
     from urllib.request import urlopen
+    from urllib.parse import urlencode, urlsplit
 except ImportError:
     from urllib2 import URLError
-    from urllib import urlencode
     from urllib2 import urlopen as _urlopen
     def urlopen(*a, **k):
         return contextlib.closing(_urlopen(*a, **k))
+    from urllib import urlencode
+    from urlparse import urlsplit
+
+# We have problems with DNS resolution failing for the reports server,
+# possibly wasting hours of effort, so we monkey-patch
+# socket.getaddrinfo to add a cache, and we preload the addresses for
+# the reports server's URLs.  Preloading is retried at 5-second intervals
+# for one minute before we give up.
+dns_cache = {}
+real_getaddrinfo = socket.getaddrinfo
+def caching_getaddrinfo(*args):
+    global dns_cache
+    try:
+        return dns_cache[args]
+    except KeyError:
+        res = real_getaddrinfo(*args)
+        dns_cache[args] = res
+        return res
+socket.getaddrinfo = caching_getaddrinfo
+
+def warm_dns_cache_1(*args):
+    global dns_cache
+    if args in dns_cache: return
+    retries = 0
+    sys.stderr.write("Looking up {}...".format(args[0]))
+    sys.stderr.flush()
+    while True:
+        try:
+            dns_cache[args] = real_getaddrinfo(*args)
+            sys.stderr.write("ok\n")
+            return
+        except socket.gaierror as e:
+            if e.errno != socket.EAI_NONAME:
+                raise
+            if retries == 12:
+                raise
+            retries += 1
+            sys.stderr.write("NXDOMAIN\nretrying in 5s...")
+            sys.stderr.flush()
+            time.sleep(5)
+
+def warm_dns_cache(cfg):
+    for url in (cfg.landmark_url, cfg.results_url):
+        s = urlsplit(url)
+        if s.scheme == 'https':
+            warm_dns_cache_1(s.hostname, s.port or 443, 0, 1)
+        elif s.scheme == 'http':
+            warm_dns_cache_1(s.hostname, s.port or 80, 0, 1)
+        else:
+            raise ValueError("don't know how to warm DNS cache for {}"
+                             .format(url))
 
 def report_results(cfg, results):
     data = dict(vars(cfg))
@@ -36,6 +86,7 @@ def report_results(cfg, results):
     del data["landmark_url"]
     del data["results_url"]
     del data["config"]
+    del data["core"]
     if data["location_unknown"]:
         del data["latitude"]
         del data["longitude"]
@@ -117,10 +168,7 @@ def perform_probes(cfg, addresses):
     which.  Each element of the iterable ADDRESSES should be a 2-tuple
     (addr, port) as returned by socket.getaddrinfo()."""
 
-    thisdir = os.path.dirname(os.path.abspath(__file__))
-    probecore = os.path.join(thisdir, "probe-core")
-
-    cmd = [probecore, str(cfg.parallel), str(cfg.spacing), str(cfg.timeout)]
+    cmd = [cfg.core, str(cfg.parallel), str(cfg.spacing), str(cfg.timeout)]
 
     start = time.time()
     try:
@@ -278,8 +326,10 @@ def parse_command_line():
         description="Make round-trip time measurements."
     )
 
-    ap.add_argument("-c", "--config", default="probe.cf",
+    ap.add_argument("-c", "--config",
                     help="Local configuration file (default: probe.cf)")
+    ap.add_argument("-C", "--core",
+                    help="Measurement core executable (default: probe-core)")
 
     ap.add_argument("--latitude", type=float, metavar="LAT",
                     help="Latitude of this computer (decimal degrees)")
@@ -294,6 +344,8 @@ def parse_command_line():
                     help="Longitude of the network proxy (decimal degrees)")
     ap.add_argument("--proxy-location-unknown", action="store_true",
                     help="Location of the network proxy is unknown")
+    ap.add_argument("--proxy-label", metavar="LABEL",
+                    help="Identifying label for the proxy.")
 
     args = ap.parse_args()
     if ((not args.location_unknown
@@ -316,11 +368,18 @@ def parse_command_line():
             ap.error("must specify both --proxy-latitude and "
                      "--proxy-longitude, or else --proxy-location-unknown")
 
+    thisdir = os.path.dirname(os.path.abspath(__file__))
+    if args.core is None:
+        args.core = os.path.join(thisdir, "probe-core")
+    if args.config is None:
+        args.config = os.path.join(thisdir, "probe.cf")
+
     return args
 
 def main():
     args = parse_command_line()
     cfg = parse_local_config_file(args)
+    warm_dns_cache(cfg)
     landmarks = get_landmark_list(cfg)
     addrs = choose_probe_order(cfg, landmarks)
     results = perform_probes(cfg, addrs)

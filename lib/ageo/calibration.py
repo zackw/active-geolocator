@@ -156,61 +156,6 @@ class CBG(Calibration):
     """
 
     def __init__(self, obs):
-        """OBS should be a 2-by-N matrix where the first column is distances
-        and the second column is round-trip times."""
-
-        # Eliminate redundant observations; for each distance d_i,
-        # only the minimum round-trip time min {r_i} can contribute to
-        # the solution.  Also, eliminate self-pings (d_i == 0) if any.
-        dists = np.unique(obs[:,0])
-        while dists[0] < 1:
-            dists = dists[1:]
-
-        minrtts = np.zeros_like(dists)
-        for i, dist in enumerate(dists):
-            thisdist = obs[:,0] == dist
-            minrtts[i] = np.amin(obs[thisdist,1])
-
-        # Standard sum-of-squares criterion.  This is not what the CBG
-        # paper did, but the thing the CBG paper *says* it did doesn't
-        # work.  It doesn't penalize putting the line above where it
-        # should be, relying on the constraints to handle that, and that
-        # makes scipy's solvers very, very unhappy.
-        def objec(xs, ys, v):
-            n = len(xs)
-            m, b = v
-            ds = ys - (m*xs + b)
-            return sum(ds*ds)/len(ds)
-
-        # constraint function template: each of these must be nonnegative
-        def constr(x, y, v):
-            return y - (v[0]*x + v[1])
-
-        fit = optimize.minimize(
-            partial(objec, dists, minrtts),
-            np.array([1/100, 0]),
-            method='COBYLA',
-            constraints=[
-                { 'type': 'ineq',
-                  'fun':  partial(constr, d, r) }
-                for d, r in zip(dists, minrtts)
-            ])
-        if not fit.success:
-            raise RuntimeError("CBG: failed to find bestline: \n" + str(fit))
-
-        # The "max curve" is the inverse function of the bestline.
-        m = 1/fit.x[0]
-        b = -m * fit.x[1]
-        self._curve = {
-            'max': _Line(m, b),
-            'min': _Line(0, 0)
-        }
-
-class CBG_LinProg(Calibration):
-    """Same as above but uses linear programming instead of generic
-       optimizer."""
-
-    def __init__(self, obs):
         """OBS should be an N-by-2 matrix where the first column is distances
         and the second column is round-trip times."""
 

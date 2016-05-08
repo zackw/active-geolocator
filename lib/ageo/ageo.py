@@ -1,11 +1,26 @@
 """ageo - active geolocation library: core.
 """
 
+__all__ = ('Location', 'Map', 'Observation')
+
 import numpy as np
 import scipy.sparse
 import tables
 
-__all__ = ('Location', 'Map', 'Observation')
+import pyproj
+from functools import partial
+
+_proj = {}
+def get_transforms(c1, c2):
+    global _projections
+    if c1 not in _proj:
+        _proj[c1] = pyproj.Proj(c1)
+    if c2 not in _proj:
+        _proj[c2] = pyproj.Proj(c2)
+    return (
+        partial(pyproj.transform, _proj[c1], _proj[c2]),
+        partial(pyproj.transform, _proj[c2], _proj[c1])
+    )
 
 class LocationRowOnDisk(tables.IsDescription):
     """The row format of the pytables table used to save Location objects
@@ -64,10 +79,11 @@ class Location:
             self.west        != other.west or
             self.lon_spacing != other.lon_spacing or
             self.lat_spacing != other.lat_spacing):
-            raise ValueError("can't intersect locations with inconsistent grids")
+            raise ValueError("can't intersect locations with "
+                             "inconsistent grids")
 
         # Compute P(self AND other).
-        M = self.probability * other.probability
+        M = self.probability.multiply(other.probability)
         s = M.sum()
         if s:
             M /= s
@@ -86,7 +102,38 @@ class Location:
             probability = M
         )
 
+    def centroid(self):
+        """Returns the weighted centroid of the probability mass function.
+        """
+
+        # The centroid of a cloud of points is just the average of
+        # their coordinates, but this only works correctly in
+        # geocentric Cartesian space, not in lat/long space.
+        # w2g() = WGS84 to geocentric
+        # g2w() = geocentric to WGS84
+        w2g, g2w = get_transforms(
+            '+proj=longlat +ellps=WGS84 +datum=WGS84 +no_defs',
+            '+proj=geocent +datum=WGS84 +units=m +no_defs')
+
+        X = 0
+        Y = 0
+        Z = 0
+        for i, j, v in zip(scipy.sparse.find(self.probability)):
+            lat = self.latitudes[i]
+            lon = self.longitudes[j]
+            x, y, z = w2g(lat, lon)
+            X += x*v
+            Y += y*v
+            Z += z*v
+
+        # Since the probability matrix is normalized, it is not
+        # necessary to divide the weighted sums by anything to get
+        # the means.  Convert back to lat/long and discard height.
+        lat, lon, _ = g2w(X, Y, Z)
+        return lat, lon
+
     def save(self, fname):
+
         """Write out this location to an HDF file.
            For compactness, we write only the nonzero entries in a
            pytables record form, and we _don't_ write out the full
@@ -94,7 +141,8 @@ class Location:
            the other metadata).
         """
         with tables.open_file(fname, mode="w", title="location") as f:
-            t = f.create_table(f.root, "location", LocationRowOnDisk, "location")
+            t = f.create_table(f.root, "location",
+                               LocationRowOnDisk, "location")
             t.attrs.resolution  = self.resolution
             t.attrs.fuzz        = self.fuzz
             t.attrs.north       = self.north
@@ -122,8 +170,9 @@ class Location:
 
     @classmethod
     def load(cls, fname):
-        """Read an HDF file containing a location (the result of save()) and
-           instantiate a Location object from it."""
+        """Read an HDF file containing a location (the result of save())
+           and instantiate a Location object from it.
+        """
 
         with tables.open_file(fname, "r"):
             t = f.location
@@ -166,13 +215,14 @@ class Map(Location):
     """
 
     def __init__(self, mapfile):
-        with tables.open(mapfile, 'r') as f:
+        with tables.open_file(mapfile, 'r') as f:
             M = f.root.baseline
             baseline = scipy.sparse.csr_matrix(M)
             # The probabilities stored in the file are not normalized.
             baseline /= baseline.sum()
 
             Location.__init__(
+                self,
                 resolution  = M.attrs.resolution,
                 fuzz        = M.attrs.fuzz,
                 north       = M.attrs.north,
@@ -197,15 +247,21 @@ class Observation(Location):
     def __init__(self, map, dfunc):
         M = scipy.sparse.dok_matrix((len(map.latitudes),
                                      len(map.longitudes)),
-                                    dtype=map.dtype)
+                                    dtype=map.probability.dtype)
 
         for i, lat in enumerate(map.latitudes):
             for j, lon in enumerate(map.longitudes):
-                n = dfunc(lon, lat)
+                n = dfunc(lat, lon)
                 if n:
                     M[i,j] = n
 
+        # Ranging functions' output is not normalized, because they
+        # don't know the grid resolution.
+        M = M.tocsr()
+        M /= M.sum()
+
         Location.__init__(
+            self,
             resolution  = map.resolution,
             fuzz        = map.fuzz,
             north       = map.north,
@@ -216,5 +272,5 @@ class Observation(Location):
             lat_spacing = map.lat_spacing,
             longitudes  = map.longitudes,
             latitudes   = map.latitudes,
-            probability = M.tocsr()
+            probability = M
         )

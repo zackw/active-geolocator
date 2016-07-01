@@ -6,7 +6,7 @@ __pycache__/
 # C compilation and related
 *.so
 *.o
-measurement-client/probe-core
+measurement-client/probe-core-direct
 measurement-client/probe-core-socks
 measurement-client/config.h
 measurement-client/Makefile

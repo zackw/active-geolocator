@@ -108,6 +108,9 @@ AC_USE_SYSTEM_EXTENSIONS
 AC_SYS_LARGEFILE
 zw_SIMPLE_ENABLE_WARNINGS
 
+dnl N.B. we assume that, if you have a particular function, then you
+dnl have the header file it's supposed to be declared in.
+
 AC_SEARCH_LIBS([lrint], [m], [],
   [AC_MSG_FAILURE([This program needs lrint.])])
 
@@ -116,7 +119,16 @@ AC_SEARCH_LIBS([clock_gettime], [rt],
     [Define to 1 if you have the `clock_gettime' function.])])
 
 AC_CHECK_FUNCS(
-  [getline closefrom ppoll poll mach_absolute_time gettimeofday])
+  [mach_absolute_time gettimeofday ppoll poll mmap closefrom])
+
+AS_IF([test "x$ac_cv_func_mmap" = xno],
+  [AC_MSG_FAILURE(
+    [This program needs mmap.])])
+
+AS_IF([test "x$ac_cv_func_ppoll" = xno &&
+       test "x$ac_cv_func_poll" = xno],
+  [AC_MSG_FAILURE(
+    [This program needs either ppoll or poll.])])
 
 AS_IF([test "x$ac_cv_func_mach_absolute_time" = xno &&
        test "x$ac_cv_search_clock_gettime" = xno &&
@@ -124,10 +136,5 @@ AS_IF([test "x$ac_cv_func_mach_absolute_time" = xno &&
   [AC_MSG_FAILURE(
     [This program needs clock_gettime, mach_absolute_time, or
     at least gettimeofday.])])
-
-AS_IF([test "x$ac_cv_func_ppoll" = xno &&
-       test "x$ac_cv_func_poll" = xno],
-  [AC_MSG_FAILURE(
-    [This program needs either ppoll or poll.])])
 
 AC_OUTPUT

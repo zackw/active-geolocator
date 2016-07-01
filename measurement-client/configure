@@ -3261,6 +3261,7 @@ done
 
 
 
+
 { $as_echo "$as_me:${as_lineno-$LINENO}: checking for library containing lrint" >&5
 $as_echo_n "checking for library containing lrint... " >&6; }
 if ${ac_cv_search_lrint+:} false; then :
@@ -3382,7 +3383,7 @@ $as_echo "#define HAVE_CLOCK_GETTIME 1" >>confdefs.h
 fi
 
 
-for ac_func in getline closefrom ppoll poll mach_absolute_time gettimeofday
+for ac_func in mach_absolute_time gettimeofday ppoll poll mmap closefrom
 do :
   as_ac_var=`$as_echo "ac_cv_func_$ac_func" | $as_tr_sh`
 ac_fn_c_check_func "$LINENO" "$ac_func" "$as_ac_var"
@@ -3395,13 +3396,10 @@ fi
 done
 
 
-if test "x$ac_cv_func_mach_absolute_time" = xno &&
-       test "x$ac_cv_search_clock_gettime" = xno &&
-       test "x$ac_cv_func_gettimeofday" = xno; then :
+if test "x$ac_cv_func_mmap" = xno; then :
   { { $as_echo "$as_me:${as_lineno-$LINENO}: error: in \`$ac_pwd':" >&5
 $as_echo "$as_me: error: in \`$ac_pwd':" >&2;}
-as_fn_error $? "This program needs clock_gettime, mach_absolute_time, or
-    at least gettimeofday.
+as_fn_error $? "This program needs mmap.
 See \`config.log' for more details" "$LINENO" 5; }
 fi
 
@@ -3410,6 +3408,16 @@ if test "x$ac_cv_func_ppoll" = xno &&
   { { $as_echo "$as_me:${as_lineno-$LINENO}: error: in \`$ac_pwd':" >&5
 $as_echo "$as_me: error: in \`$ac_pwd':" >&2;}
 as_fn_error $? "This program needs either ppoll or poll.
+See \`config.log' for more details" "$LINENO" 5; }
+fi
+
+if test "x$ac_cv_func_mach_absolute_time" = xno &&
+       test "x$ac_cv_search_clock_gettime" = xno &&
+       test "x$ac_cv_func_gettimeofday" = xno; then :
+  { { $as_echo "$as_me:${as_lineno-$LINENO}: error: in \`$ac_pwd':" >&5
+$as_echo "$as_me: error: in \`$ac_pwd':" >&2;}
+as_fn_error $? "This program needs clock_gettime, mach_absolute_time, or
+    at least gettimeofday.
 See \`config.log' for more details" "$LINENO" 5; }
 fi
 

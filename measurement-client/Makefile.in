@@ -12,22 +12,29 @@ X           = @EXEEXT@
 LDCMD       = $(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS)
 CCCMD       = $(CC) $(CPPFLAGS) $(CFLAGS) $(WARN_CFLAGS) -c
 
-all: probe-core$X probe-core-socks$X
+all: probe-core-direct$X probe-core-socks$X
 
-probe-core$X: probe-core$O
-	$(LDCMD) -o probe-core$X probe-core$O $(LIBS)
+probe-core-direct$X: probe-core-direct$O probe-core-common$O
+	$(LDCMD) -o probe-core-direct$X \
+	    probe-core-direct$O probe-core-common$O $(LIBS)
 
-probe-core-socks$X: probe-core-socks$O
-	$(LDCMD) -o probe-core-socks$X probe-core-socks$O $(LIBS)
+probe-core-socks$X: probe-core-socks$O probe-core-common$O
+	$(LDCMD) -o probe-core-socks$X \
+	    probe-core-socks$O probe-core-common$O $(LIBS)
 
-probe-core$O: probe-core.c config.h
-	$(CCCMD) -o probe-core$O probe-core.c
+probe-core-direct$O: probe-core-direct.c probe-core.h config.h
+	$(CCCMD) -o probe-core-direct$O probe-core-direct.c
 
-probe-core-socks$O: probe-core-socks.c config.h
+probe-core-socks$O: probe-core-socks.c probe-core.h config.h
 	$(CCCMD) -o probe-core-socks$O probe-core-socks.c
 
+probe-core-common$O: probe-core-common.c probe-core.h config.h
+	$(CCCMD) -o probe-core-common$O probe-core-common.c
+
 clean:
-	-rm -f probe-core$O probe-core$X probe-core-socks$O probe-core-socks$X
+	-rm -f probe-core-direct$O probe-core-direct$X \
+               probe-core-socks$O probe-core-socks$X \
+               probe-core-common$O
 distclean: clean
 	-rm -f config.h config.status Makefile
 

@@ -23,10 +23,12 @@
 # else
 #  define CALLOCLIKE __attribute__((malloc))
 # endif
+# define UNUSED_ARG(arg) arg __attribute__((unused))
 #else
 # define NORETURN void
 # define PRINTFLIKE /*nothing*/
 # define CALLOCLIKE /*nothing*/
+# define UNUSED_ARG(arg) arg
 #endif
 
 #ifdef HAVE__STATIC_ASSERT
@@ -91,9 +93,31 @@ struct addrinfo;
 extern int nonblocking_socket(const struct addrinfo *ai);
 extern int close_unnecessary_fds(void);
 
-/* Miscellaneous miscellaneous */
+/* Core probe loop and its callback */
 
-extern void progress_report(uint64_t now, size_t n_conns, size_t n_proc,
-                            int n_pending);
+struct conn_internal
+{
+  uint64_t begin;  /* Time at which this probe began */
+  uint32_t state;  /* Initially 0, next_action may use as it sees fit */
+  uint32_t state2; /* Ditto - not currently used */
+};
+
+extern void perform_probes(struct conn_buffer *cbuf,
+                           const struct addrinfo *proxy,
+                           uint32_t maxfd);
+
+/* Take the next action appropriate for connection CD+CI, which is
+   associated with socket descriptor FD.  Returns 0 if processing of
+   this connection is complete (in which case FD will be closed), or
+   else some combination of POLL* flags (in which case they will be
+   applied on the next call to poll() for this file descriptor);
+   updates CD and CI as appropriate.  PROXY is the address of the
+   proxy, if any, and NOW is the current time.  */
+
+extern int next_action(struct conn_data *cd,
+                       struct conn_internal *ci,
+                       int fd,
+                       const struct addrinfo *proxy,
+                       uint64_t now);
 
 #endif /* probe-core-common.h */

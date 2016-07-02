@@ -39,21 +39,12 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
-/* Internal per-connection data */
-enum socks_state
-{
-  NOT_YET_CONNECTED = 0,
-  CONNECTING,
-  SENT_AUTH,
-  SENT_DESTINATION,
-  FINISHED
-};
-
-struct conn_internal
-{
-  uint64_t begin;
-  enum socks_state sstate;
-};
+/* Values for conn_internal.state */
+#define NOT_YET_CONNECTED 0
+#define CONNECTING        1
+#define SENT_AUTH         2
+#define SENT_DESTINATION  3
+#define FINISHED          4
 
 /* SOCKS state machine */
 
@@ -131,24 +122,17 @@ send_all(int fd, size_t nbytes, const char *buf)
   return 0;
 }
 
-/* Take the next action appropriate for connection CD+CI, which is
-   associated with socket descriptor FD.  Returns 0 if processing of
-   this connection is complete (in which case FD will be closed), or
-   else some combination of POLL* flags (in which case they will be
-   applied on the next call to poll() for this file descriptor);
-   updates CN as appropriate.  PROXY should hold the address of
-   the SOCKS proxy, and NOW is the current time.  */
-static int
+int
 next_action(struct conn_data *cd, struct conn_internal *ci, int fd,
             const struct addrinfo *proxy, uint64_t now)
 {
-  switch (ci->sstate) {
+  switch (ci->state) {
   case NOT_YET_CONNECTED:
     ci->begin = now;
     if (connect(fd, proxy->ai_addr, proxy->ai_addrlen)) {
       if (errno == EINPROGRESS) {
         /* Connection attempt is pending. */
-        ci->sstate = CONNECTING;
+        ci->state = CONNECTING;
         return POLLOUT;
       } else
         /* Synchronous connection failure. */
@@ -167,7 +151,7 @@ next_action(struct conn_data *cd, struct conn_internal *ci, int fd,
   connection_established:
     /* Send an unauthenticated SOCKSv5 client handshake. */
     if (!send_all(fd, 3, "\x05\x01\x00")) {
-      ci->sstate = SENT_AUTH;
+      ci->state = SENT_AUTH;
       return POLLIN;
     } else
       /* Disconnect during handshake? */
@@ -199,7 +183,7 @@ next_action(struct conn_data *cd, struct conn_internal *ci, int fd,
     memcpy(dbuf+8, &cd->tcp_port, 2);
     if (!send_all(fd, 10, dbuf)) {
       ci->begin = clock_monotonic();
-      ci->sstate = SENT_DESTINATION;
+      ci->state = SENT_DESTINATION;
       return POLLIN;
     } else
       /* Disconnect during handshake? */
@@ -210,7 +194,7 @@ next_action(struct conn_data *cd, struct conn_internal *ci, int fd,
     /* When we reach this point we are done with the measurement; set
        cd->elapsed now (before reading any more data).  */
     cd->elapsed = now - ci->begin;
-    ci->sstate = FINISHED;
+    ci->state = FINISHED;
 
     char rbuf[2];
     if (recv_all(fd, 2, rbuf)) {
@@ -236,7 +220,7 @@ next_action(struct conn_data *cd, struct conn_internal *ci, int fd,
     cd->errnm = errno;
   finished_err_already_set:
     cd->elapsed = clock_monotonic() - ci->begin;
-    ci->sstate = FINISHED;
+    ci->state = FINISHED;
 
   case FINISHED:
     /* Shouldn't ever actually branch to the case label, but we can
@@ -244,7 +228,8 @@ next_action(struct conn_data *cd, struct conn_internal *ci, int fd,
     return 0;
 
   default:
-    abort();
+    fatal_printf("next_action called with invalid ci->state == %d\n",
+                 ci->state);
   }
 }
 
@@ -266,112 +251,8 @@ main(int argc, char **argv)
                  argv[4], argv[5], gai_strerror(gaierr));
 
   uint32_t maxfd = close_unnecessary_fds();
-  uint32_t i;
 
   struct conn_buffer *cbuf = load_conn_buffer(0);
-  if (cbuf->n_processed >= cbuf->n_conns)
-    return 0; /* none left */
-
-  uint64_t spacing = cbuf->spacing;
-  uint64_t timeout = cbuf->timeout;
-
-  struct conn_data *cdat = &cbuf->conns[0];
-  struct conn_internal *cint =
-    xcalloc(cbuf->n_conns, sizeof(struct conn_internal), "conn_internal");
-
-  /* The 'pollvec' array has one more entry than necessary so that
-     memmove()s below work as expected when the array is full. */
-  struct pollfd *pollvec =
-    xcalloc(maxfd + 1, sizeof(struct pollfd), "pollvec");
-
-  /* The 'pending' array is indexed by file descriptor number and
-     holds the index of the corresponding entries in cdat and cint.  */
-  uint32_t *pending = xcalloc(maxfd, sizeof(uint32_t), "pending");
-  for (i = 0; i < maxfd; i++) pending[i] = -1;
-
-  uint32_t n_pending = 0;
-  uint32_t n_conns = cbuf->n_conns;
-  uint32_t nxt = 0;
-  uint64_t now;
-  uint64_t last_conn = 0;
-  uint64_t last_progress_report = 0;
-  int events;
-
-  clock_init();
-
-  while (nxt < n_conns || n_pending) {
-    now = clock_monotonic();
-    /* Issue a progress report once a minute.  */
-    if (last_progress_report == 0 ||
-        now - last_progress_report > 60 * 1000000000ull) {
-      progress_report(now, n_conns, cbuf->n_processed, n_pending);
-      last_progress_report = now;
-    }
-
-    if (n_pending < maxfd - 3 && nxt < n_conns &&
-        now - last_conn >= spacing) {
-
-      while (nxt < n_conns && cdat[nxt].elapsed != 0)
-        nxt++;
-
-      if (nxt < n_conns) {
-        int sock = nonblocking_socket(proxy);
-        if ((uint32_t)sock > maxfd)
-          fatal_printf("socket fd %d out of expected range", sock);
-
-        now = last_conn = clock_monotonic();
-        events = next_action(&cdat[nxt], &cint[nxt], sock, proxy, now);
-
-        if (events) {
-          /* The connection attempt is pending. */
-          pending[sock] = nxt;
-          pollvec[n_pending].fd = sock;
-          pollvec[n_pending].events = events;
-          pollvec[n_pending].revents = 0;
-          n_pending++;
-        } else
-          close(sock);
-
-        nxt++;
-      }
-    }
-
-    int nready = clock_poll(pollvec, n_pending, timeout);
-    if (nready < 0)
-      fatal_perror("poll");
-    now = clock_monotonic();
-
-    /* Inspect all of the pending sockets for both readiness and timeout. */
-    for (i = 0; i < n_pending; i++) {
-      bool to_close = false;
-      struct conn_data *cd     = &cdat[pending[pollvec[i].fd]];
-      struct conn_internal *ci = &cint[pending[pollvec[i].fd]];
-      if (pollvec[i].revents) {
-        events = next_action(cd, ci, pollvec[i].fd, proxy, now);
-        if (events == 0)
-          to_close = true;
-        else {
-          pollvec[i].events = events;
-          pollvec[i].revents = 0;
-        }
-
-      } else if (now - ci->begin >= timeout) {
-        cd->elapsed = now - ci->begin;
-        cd->errnm = ETIMEDOUT;
-        to_close = true;
-      }
-
-      if (to_close) {
-        pending[pollvec[i].fd] = -1;
-        close(pollvec[i].fd);
-        memmove(&pollvec[i], &pollvec[i+1],
-                (n_pending - i)*sizeof(struct pollfd));
-        n_pending--;
-        i--;
-        cbuf->n_processed++;
-      }
-    }
-  }
-
+  perform_probes(cbuf, proxy, maxfd);
   return 0;
 }

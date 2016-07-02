@@ -221,7 +221,7 @@ clock_print_elapsed(FILE *fp, uint64_t nsec)
   fprintf(fp, "%uh %02um %06.3fs", h, m, s);
 }
 
-void
+static void
 progress_report(uint64_t now, size_t n_conns, size_t n_proc, int n_pending)
 {
   clock_print_elapsed(stderr, now);
@@ -345,4 +345,118 @@ load_conn_buffer(int fd)
                  sizeof(struct conn_buffer));
 
   return buf;
+}
+
+/* Main loop, called by main() in each specialization, calls back to
+   next_action() in each specialization */
+
+void
+perform_probes(struct conn_buffer *cbuf,
+               const struct addrinfo *proxy,
+               uint32_t maxfd)
+{
+  uint64_t spacing = cbuf->spacing;
+  uint64_t timeout = cbuf->timeout;
+  uint32_t n_conns = cbuf->n_conns;
+  uint32_t n_pending = 0;
+  uint32_t nxt = 0;
+  uint32_t i;
+  uint64_t now;
+  uint64_t last_conn = 0;
+  uint64_t last_progress_report = 0;
+  int events;
+
+  if (cbuf->n_processed >= cbuf->n_conns)
+    return; /* none left */
+
+  struct conn_data *cdat = &cbuf->conns[0];
+
+  struct conn_internal *cint =
+    xcalloc(cbuf->n_conns, sizeof(struct conn_internal), "conn_internal");
+
+  /* The 'pollvec' array has one more entry than necessary so that
+     memmove()s below work as expected when the array is full. */
+  struct pollfd *pollvec =
+    xcalloc(maxfd + 1, sizeof(struct pollfd), "pollvec");
+
+  /* The 'pending' array is indexed by file descriptor number and
+     holds the index of the corresponding entries in cdat and cint.  */
+  uint32_t *pending = xcalloc(maxfd, sizeof(uint32_t), "pending");
+  for (i = 0; i < maxfd; i++) pending[i] = -1;
+
+  clock_init();
+
+  while (nxt < n_conns || n_pending) {
+    now = clock_monotonic();
+    /* Issue a progress report once a minute.  */
+    if (last_progress_report == 0 ||
+        now - last_progress_report > 60 * 1000000000ull) {
+      progress_report(now, n_conns, cbuf->n_processed, n_pending);
+      last_progress_report = now;
+    }
+
+    if (n_pending < maxfd - 3 && nxt < n_conns &&
+        now - last_conn >= spacing) {
+
+      while (nxt < n_conns && cdat[nxt].elapsed != 0)
+        nxt++;
+
+      if (nxt < n_conns) {
+        int sock = nonblocking_socket(proxy);
+        if ((uint32_t)sock > maxfd)
+          fatal_printf("socket fd %d out of expected range", sock);
+
+        now = last_conn = clock_monotonic();
+        events = next_action(&cdat[nxt], &cint[nxt], sock, proxy, now);
+
+        if (events) {
+          /* The connection attempt is pending. */
+          pending[sock] = nxt;
+          pollvec[n_pending].fd = sock;
+          pollvec[n_pending].events = events;
+          pollvec[n_pending].revents = 0;
+          n_pending++;
+        } else
+          close(sock);
+
+        nxt++;
+      }
+    }
+
+    int nready = clock_poll(pollvec, n_pending, timeout);
+    if (nready < 0)
+      fatal_perror("poll");
+    now = clock_monotonic();
+
+    /* Inspect all of the pending sockets for both readiness and timeout. */
+    for (i = 0; i < n_pending; i++) {
+      bool to_close = false;
+      struct conn_data *cd     = &cdat[pending[pollvec[i].fd]];
+      struct conn_internal *ci = &cint[pending[pollvec[i].fd]];
+      if (pollvec[i].revents) {
+        events = next_action(cd, ci, pollvec[i].fd, proxy, now);
+        if (events == 0)
+          to_close = true;
+        else {
+          pollvec[i].events = events;
+          pollvec[i].revents = 0;
+        }
+
+      } else if (now - ci->begin >= timeout) {
+        cd->elapsed = now - ci->begin;
+        cd->errnm = ETIMEDOUT;
+        to_close = true;
+      }
+
+      if (to_close) {
+        pending[pollvec[i].fd] = -1;
+        close(pollvec[i].fd);
+        memmove(&pollvec[i], &pollvec[i+1],
+                (n_pending - i)*sizeof(struct pollfd));
+        n_pending--;
+        i--;
+        cbuf->n_processed++;
+      }
+    }
+  }
 }

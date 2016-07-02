@@ -7,7 +7,6 @@
 
 #include "config.h"
 
-#include <assert.h>
 #include <stddef.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -28,6 +27,20 @@
 # define NORETURN void
 # define PRINTFLIKE /*nothing*/
 # define CALLOCLIKE /*nothing*/
+#endif
+
+#ifdef HAVE__STATIC_ASSERT
+#define static_assert(expr, msg) _Static_assert(expr, msg)
+#else
+# ifdef __COUNTER__
+#  define STATIC_ASSERT_UNIQUE() STATIC_ASSERT_PASTE(static_assert_,__COUNTER__)
+# else
+#  define STATIC_ASSERT_UNIQUE() STATIC_ASSERT_PASTE(static_assert_,__LINE__)
+# endif
+# define STATIC_ASSERT_PASTE(x,y) STATIC_ASSERT_PASTE2(x,y)
+# define STATIC_ASSERT_PASTE2(x,y) x##y
+# define static_assert(expr, msg) \
+  struct STATIC_ASSERT_UNIQUE() { int assertion_failed : !!(expr); }
 #endif
 
 /* The memory segment shared with the parent process.  On startup, this is

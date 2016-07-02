@@ -96,7 +96,7 @@ AC_DEFUN([zw_SIMPLE_ENABLE_WARNINGS],
 AC_INIT([probe-core], [1.0],
   [https://github.com/zackw/active-geolocator/issues/new])
 
-AC_CONFIG_SRCDIR([probe-core.c])
+AC_CONFIG_SRCDIR([probe-core-common.c])
 AC_CONFIG_HEADERS([config.h])
 AC_CONFIG_FILES([Makefile])
 
@@ -107,6 +107,33 @@ AS_IF([test "x$ac_cv_prog_cc_c99" = xno],
 AC_USE_SYSTEM_EXTENSIONS
 AC_SYS_LARGEFILE
 zw_SIMPLE_ENABLE_WARNINGS
+
+dnl OSX ships an <assert.h> that does not expose C11's
+dnl static_assert(), even in -std=c11 mode.  Autoconf doesn't have
+dnl AC_PROG_CC_C11 yet.
+AC_CACHE_CHECK([for _Static_assert], [ac_cv_c__Static_assert],
+[AC_COMPILE_IFELSE([AC_LANG_PROGRAM([],
+[[
+    _Static_assert(sizeof(int) >= 1, "this assertion should succeed");
+]])],
+# if successful
+  [AC_COMPILE_IFELSE([AC_LANG_PROGRAM([],
+  [[
+      _Static_assert(sizeof(int) < 1, "this assertion should fail");
+  ]])],
+  # if the second compilation succeeded, _Static_assert doesn't work
+    [ac_cv_c__Static_assert=no],
+  # if the second compilation _failed_, _Static_assert does work
+    [ac_cv_c__Static_assert=yes])],
+# if the first compilation failed, _Static_assert is not available or
+# doesn't work
+  [ac_cv_c__Static_assert=no])
+])
+if test $ac_cv_c__Static_assert = yes; then
+  AC_DEFINE([HAVE__STATIC_ASSERT], 1,
+    [Define to 1 if your C compiler supports _Static_assert, in C99 mode.])
+fi
+
 
 dnl N.B. we assume that, if you have a particular function, then you
 dnl have the header file it's supposed to be declared in.

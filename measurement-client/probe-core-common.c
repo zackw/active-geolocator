@@ -301,7 +301,7 @@ close_unnecessary_fds(void)
                          "invalid /proc/self/fd entry");
 
       if (fd >= 3 && fd != dfd)
-        close((int)fd);
+        close(fd);
     }
     closedir(fdir);
 

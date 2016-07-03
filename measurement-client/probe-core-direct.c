@@ -30,7 +30,7 @@
 #include <netdb.h>
 #include <netinet/in.h>
 #include <string.h>
-#include <unistd.h>
+#include <sys/socket.h>
 
 /* Values for conn_internal.state */
 #define NOT_YET_CONNECTED 0

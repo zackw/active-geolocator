@@ -7,13 +7,9 @@
 
 #include "config.h"
 
-#include <stddef.h>
-#include <stdbool.h>
-#include <stdint.h>
-#include <sys/types.h>
-
 #include <poll.h>
-#include <stdio.h>
+#include <stddef.h>
+#include <stdint.h>
 
 #if defined __GNUC__ && __GNUC__ >= 4
 # define NORETURN void __attribute__((noreturn))

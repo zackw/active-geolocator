@@ -235,7 +235,7 @@ next_action(struct conn_data *cd, struct conn_internal *ci, int fd,
 int
 main(int argc, char **argv)
 {
-  progname = argv[0];
+  set_progname(argv[0]);
   if (argc != 3)
     fatal("two arguments required: proxy_addr proxy_port");
 

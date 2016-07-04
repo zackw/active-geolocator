@@ -40,7 +40,21 @@
 #endif
 
 /* Error reporting */
-const char *progname;
+static const char *progname;
+
+void
+set_progname(const char *name)
+{
+  if (!name || !name[0])
+    progname = "<program name missing>";
+  else {
+    const char *p = strrchr(name, '/');
+    if (p && p[1] != '\0')
+      progname = p + 1;
+    else
+      progname = name;
+  }
+}
 
 NORETURN
 fatal(const char *msg)
@@ -340,7 +354,8 @@ load_conn_buffer(int fd)
     fatal_perror("mmap");
 
   /* sanity check */
-  if ((size_t)st.st_size !=
+  /* the OS may have rounded the size up to the nearest page */
+  if ((size_t)st.st_size <
       ((size_t)buf->n_conns) * sizeof(struct conn_data)
       + sizeof(struct conn_buffer))
     fatal_printf("connection buffer is the wrong size: %zu "
@@ -409,7 +424,9 @@ perform_probes(struct conn_buffer *cbuf,
     if (n_pending < maxfd - 3 && nxt < n_conns &&
         now - last_conn >= spacing) {
 
-      while (nxt < n_conns && cdat[nxt].elapsed != 0)
+      while (nxt < n_conns &&
+             (cdat[nxt].elapsed != 0 ||  /* skip already completed */
+              cdat[nxt].ipv4_addr == 0)) /* skip blank entries */
         nxt++;
 
       if (nxt < n_conns) {

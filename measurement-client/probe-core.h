@@ -72,7 +72,7 @@ static_assert(sizeof(struct conn_buffer) == 16, "conn_buffer is wrong size");
 extern struct conn_buffer *load_conn_buffer(int fd);
 
 /* Error reporting */
-extern const char *progname; /* main must set */
+extern void set_progname(const char *name);
 extern NORETURN fatal(const char *msg);
 extern NORETURN fatal_perror(const char *msg);
 extern PRINTFLIKE NORETURN fatal_printf(const char *msg, ...);

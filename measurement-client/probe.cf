@@ -5,8 +5,10 @@ landmark_url=https://research.owlfolio.org/active-geo/api/1/landmark-list
 results_url=https://research.owlfolio.org/active-geo/api/1/probe-results
 # Time between successive probes (milliseconds)
 spacing=10
-# Number of concurrent probes to perform
-parallel=10
+# Maximum number of concurrent probes to perform (0 = no limit)
+# This is clipped to the length of the landmark list, to reduce the odds
+# of hitting the same server more than once at a time.
+parallel=0
 # Connection timeout (milliseconds)
 timeout=1000
 # Number of times to probe each landmark

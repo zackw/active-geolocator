@@ -202,8 +202,12 @@ clock_poll(struct pollfd fds[], nfds_t nfds, uint64_t timeout)
   return ppoll(fds, nfds, &ts, 0);
 
 #elif defined HAVE_POLL
-  /* plain poll() timeout is in milliseconds */
-  return poll(fds, nfds, timeout / 1000000);
+  /* plain poll() timeout is in milliseconds; ensure we do not pass
+     zero or a negative number, which have special meanings */
+  int timeout_ms = timeout / 1000000;
+  if (timeout_ms <= 1)
+    timeout_ms = 1;
+  return poll(fds, nfds, timeout_ms);
 
 #else
 # error "need a way to wait for multiple sockets with timeout"
@@ -325,8 +329,11 @@ load_conn_buffer(int fd)
 
   if (fstat(fd, &st))
     fatal_perror("fstat");
-  if (st.st_size > (off_t)SIZE_MAX)
-    fatal("connection buffer is too big to map into memory");
+  if (st.st_size >= (off_t)SSIZE_MAX)
+    fatal_printf("connection buffer is too big to map into memory"
+                 " (size %llu limit %llu)",
+                 (unsigned long long)st.st_size,
+                 (unsigned long long)SSIZE_MAX);
 
   buf = mmap(0, (size_t)st.st_size, PROT_READ|PROT_WRITE, MAP_SHARED, fd, 0);
   if (!buf)
@@ -385,6 +392,9 @@ perform_probes(struct conn_buffer *cbuf,
   uint32_t *pending = xcalloc(maxfd, sizeof(uint32_t), "pending");
   for (i = 0; i < maxfd; i++) pending[i] = -1;
 
+  fprintf(stderr, "Performing probes at %.0fms intervals, timeout %.0fms.\n"
+          "Max %d probes in flight.\n",
+          spacing * 1e-6, timeout * 1e-6, maxfd - 3);
   clock_init();
 
   while (nxt < n_conns || n_pending) {
@@ -460,4 +470,6 @@ perform_probes(struct conn_buffer *cbuf,
       }
     }
   }
+  now = clock_monotonic();
+  progress_report(now, n_conns, cbuf->n_processed, n_pending);
 }

@@ -41,10 +41,14 @@
   struct STATIC_ASSERT_UNIQUE() { int assertion_failed : !!(expr); }
 #endif
 
-/* The memory segment shared with the parent process.  On startup, this is
-   accessible as file descriptor 0.  Note that the parent process is Python
-   and is using struct.pack/unpack to access the segment, so it is critical
-   for these structures to contain no invisible padding.  */
+/* The memory segment shared with the parent process.  On startup,
+   this is accessible as file descriptor 0.  Note that the parent
+   process is Python and is using struct.pack/unpack to access the
+   segment, so it is critical for these structures to contain no
+   invisible padding.  It's also important to know that the SPACING
+   and TIMEOUT parameters are expressed in nanoseconds for consistency
+   with all other timestamps in this program, but they may get rounded
+   up to the millisecond if the OS doesn't have ppoll(). */
 
 struct conn_data
 {

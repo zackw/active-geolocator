@@ -3,11 +3,11 @@
 landmark_url=https://research.owlfolio.org/active-geo/api/1/landmark-list
 # URL to push results back to.
 results_url=https://research.owlfolio.org/active-geo/api/1/probe-results
-# Time between successive probes (seconds)
-spacing=0.1
+# Time between successive probes (milliseconds)
+spacing=10
 # Number of concurrent probes to perform
 parallel=10
-# Connection timeout
-timeout=10
+# Connection timeout (milliseconds)
+timeout=1000
 # Number of times to probe each landmark
 n_probes=10

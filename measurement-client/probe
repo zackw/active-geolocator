@@ -4,12 +4,15 @@ from __future__ import division
 
 import argparse
 import contextlib
+import ctypes
 import datetime
 import errno
 import json
+import mmap
 import os
 import random
 import socket
+import struct
 import subprocess
 import sys
 import time
@@ -79,6 +82,175 @@ def warm_dns_cache(cfg):
         else:
             raise ValueError("don't know how to warm DNS cache for {}"
                              .format(url))
+
+# Communication with probe-core uses a shared memory segment, passed down
+# as the "stdin".  Unfortunately, the stdlib doesn't expose shm_open.
+def find_shm_open():
+    # shm_open and shm_unlink might be in one of several different libraries.
+    libs_to_search = [
+        "libc.so.6", "libc.so.1", "librt.so.1",
+    ]
+    for lib in libs_to_search:
+        try:
+            h = ctypes.CDLL(lib, use_errno=True)
+            shm_open = h.shm_open
+            shm_unlink = h.shm_unlink
+
+            # The last argument to shm_open is mode_t, but ctypes doesn't
+            # expose mode_t.  The integer promotions will hopefully
+            # prevent problems.
+            shm_open.argtypes = (ctypes.c_char_p, ctypes.c_int, ctypes.c_int)
+            shm_unlink.argtypes = (ctypes.c_char_p,)
+            return (shm_open, shm_unlink)
+
+        except:
+            continue
+
+    return (None, None)
+
+shm_open, shm_unlink = find_shm_open()
+if shm_open is not None:
+    try:
+        from tempfile import _RandomNameSequence
+    except:
+        import random
+        def _RandomNameSequence():
+            """_RandomNameSequence generates an endless sequence of
+               unpredictable strings which can safely be incorporated
+               into file names.  Each string is six characters long.
+            """
+            characters = ("abcdefghijklmnopqrstuvwxyz"
+                          "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+                          "0123456789_")
+            rng = random.Random()
+            normcase = os.path.normcase
+            while 1:
+                letters = []
+                yield normcase("".join(
+                    rng.choice(characters) for _ in "123456"
+                ))
+
+    class MemorySegment:
+        def __init__(self):
+            self._fd = -1
+
+            retries = 0
+            flags = os.O_RDWR|os.O_CREAT|os.O_EXCL
+            mode = 384 # 0600
+            for nm in _RandomNameSequence():
+                xnm = "/"+nm
+                fd = shm_open(xnm, flags, mode)
+                if fd >= 0:
+                    break
+                err = ctypes.get_errno()
+                if err != errno.EEXIST or retries > 1000:
+                    raise OSError(err, "shm_open: " + os.strerror(err), xnm)
+                retries += 1
+
+            self._fd = fd
+
+            rv = shm_unlink(xnm)
+            if rv:
+                err = ctypes.get_errno()
+                os.close(self._fd)
+                self._fd = -1
+                raise OSError(err, "shm_unlink: " + os.strerror(err), xnm)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *ignored):
+            self.close()
+            return False
+
+        def __del__(self):
+            self.close()
+
+        def close(self):
+            if self._fd != -1:
+                fd = self._fd
+                self._fd = -1
+                os.close(fd)
+
+        def fileno(self):
+            return self._fd
+
+else:
+    # if we don't have shm_open, a temporary file will do
+    from tempfile import TemporaryFile as MemorySegment
+
+class ConnBuffer:
+    def __init__(self, addrs, spacing, timeout):
+        self.addrs   = addrs
+        self.n_conn  = len(addrs)
+        self.n_proc  = 0
+        self.spacing = spacing
+        self.timeout = timeout
+        self.hform   = struct.Struct("=IIII")
+        self.cform   = struct.Struct("=4sHHQ")
+        self.seg_obj = None
+        self.seg_fd  = None
+        self.seg_map = None
+        self.seg_len = self.hform.size + self.cform.size * self.n_conn
+
+    def __enter__(self):
+        self.seg_obj = MemorySegment()
+        self.seg_fd  = self.seg_obj.fileno()
+        os.ftruncate(self.seg_fd, self.seg_len)
+        self.seg_map = mmap.mmap(self.seg_fd, self.seg_len)
+        self.encode_addrs()
+        return self
+
+    def __del__(self):
+        self.close()
+
+    def __exit__(self, *ignored):
+        self.close()
+        return False
+
+    def close(self):
+        if self.seg_map is not None:
+            self.seg_map.close()
+            self.seg_map = None
+        if self.seg_obj is not None:
+            self.seg_obj.close()
+            self.seg_obj = None
+            self.seg_fd = -1
+
+    def check_completion(self):
+        _, n_proc, _, _ = self.hform.unpack(self.seg_map[0:self.hform.size])
+        self.n_proc = n_proc
+        return self.n_proc == self.n_conn
+
+    def encode_addrs(self):
+        self.hform.pack_into(self.seg_map, 0,
+                             self.n_conn, 0,
+                             max(int(self.spacing * 1e6), 1000000),
+                             max(int(self.timeout * 1e6), 1000000))
+        offset = self.hform.size
+        for host, port in self.addrs:
+            addr = socket.inet_aton(host)
+            port = socket.htons(port)
+            self.cform.pack_into(self.seg_map, offset,
+                                 addr, port, 0, 0)
+            offset += self.cform.size
+
+    def decode_results(self):
+        offset = self.hform.size
+        results = []
+        while offset < self.seg_len:
+            addr, port, err, elapsed = \
+                self.cform.unpack_from(self.seg_map, offset)
+            host = socket.inet_ntoa(addr)
+            port = socket.ntohs(port)
+            results.append((
+                host, port,
+                errno.errorcode.get(err, err),
+                elapsed * 1e-9
+            ))
+            offset += self.cform.size
+
+        return results
 
 def report_results(cfg, results):
     data = dict(vars(cfg))
@@ -168,60 +340,27 @@ def perform_probes(cfg, addresses):
     which.  Each element of the iterable ADDRESSES should be a 2-tuple
     (addr, port) as returned by socket.getaddrinfo()."""
 
-    cmd = [cfg.core, str(cfg.parallel), str(cfg.spacing), str(cfg.timeout)]
+    cmd = [cfg.core]
 
     if cfg.socks5:
         cmd.append(cfg.socks5[0])
         cmd.append(str(cfg.socks5[1]))
 
-    start = time.time()
-    try:
-        proc = subprocess.Popen(cmd,
-                                stdin=subprocess.PIPE,
-                                stdout=subprocess.PIPE)
+    with ConnBuffer(addresses, cfg.spacing, cfg.timeout) as cb:
+        sys.stderr.write("Performing RTT measurements...\n")
+        proc = subprocess.Popen(cmd, stdin=cb.seg_fd)
 
-        for host, port in addresses:
-            proc.stdin.write("{} {}\n".format(host, port))
-        proc.stdin.close()
+        rc = proc.wait()
+        if rc > 0:
+            sys.stderr.write("probe-core exited unsuccessfully (code {})\n"
+                             .format(rc))
+            sys.exit(1)
+        elif rc < 0:
+            sys.stderr.write("probe-core killed by signal {}\n"
+                             .format(-rc))
+            sys.exit(1)
 
-    except Exception as e:
-        sys.stderr.write("error while starting probe-core: {}\n"
-                         .format(e))
-        sys.exit(1)
-
-    sys.stderr.write("Performing RTT measurements...\n")
-
-    results = []
-    ok = True
-    for meas in proc.stdout:
-        try:
-            host, port, err, elapsed = meas.split()
-            results.append((host, port, errno.errorcode.get(err, err), elapsed))
-        except Exception as e:
-            sys.stderr.write("probe-core: unexpected output: {!r} ({})\n"
-                             .format(meas, e))
-            ok = False
-
-    rc = proc.wait()
-    if rc > 0:
-        sys.stderr.write("probe-core exited unsuccessfully (code {})\n"
-                         .format(rc))
-        sys.exit(1)
-    elif rc < 0:
-        sys.stderr.write("probe-core killed by signal {}\n"
-                         .format(-rc))
-        sys.exit(1)
-
-    if not ok:
-        sys.exit(1)
-
-    stop = time.time()
-    h, m = divmod(stop - start, 3600)
-    m, s = divmod(m, 60)
-    sys.stderr.write("RTT measurements completed in {:d}h {:02d}m {:05.2f}s.\n"
-                     .format(int(h), int(m), s))
-
-    return results
+        return cb.decode_results()
 
 def choose_probe_order(cfg, addresses):
     """Choose a randomized probe order for the ADDRESSES.  This both expands
@@ -282,7 +421,7 @@ def parse_local_config_file(args):
             setattr(args, "landmark_url", p.get("probe", "landmark_url"))
             setattr(args, "results_url", p.get("probe", "results_url"))
             setattr(args, "spacing", p.getfloat("probe", "spacing"))
-            setattr(args, "parallel", p.getint("probe", "parallel"))
+#            setattr(args, "parallel", p.getint("probe", "parallel"))
             setattr(args, "timeout", p.getfloat("probe", "timeout"))
             setattr(args, "nprobes", p.getint("probe", "n_probes"))
 
@@ -291,21 +430,21 @@ def parse_local_config_file(args):
             # minimize the odds of running into the _real_ limit,
             # which is the kernel-imposed number of open files per
             # process, minus 3.
-            if args.parallel < 1 or args.parallel > 100:
-                raise ValueError("'parallel' must be from 1 to 100")
+#            if args.parallel < 1 or args.parallel > 100:
+#                raise ValueError("'parallel' must be from 1 to 100")
 
             # poll(2) takes its timeout in milliseconds, so a timeout
             # smaller than one millisecond is impossible (probe-core
             # *could* be using ppoll, but we don't know that).  We
             # impose an artificial upper limit here of one minute.
-            if args.timeout < 0.0001 or args.timeout > 60:
-                raise ValueError("'timeout' must be from 0.0001 to 60")
+            if args.timeout < 1 or args.timeout > 60000:
+                raise ValueError("'timeout' must be from 1 to 60000")
 
             # spacings smaller than one millisecond are impossible for the
             # same reason as above, and it doesn't make sense for the spacing
             # to be bigger than the timeout.
-            if args.spacing < 0.0001 or args.spacing > args.timeout:
-                raise ValueError("'spacing' must be from 0.0001 to timeout")
+            if args.spacing < 1 or args.spacing > args.timeout:
+                raise ValueError("'spacing' must be from 1 to timeout")
 
             # Less than one probe per landmark doesn't make sense, and more
             # than 20 is unlikely to be helpful/
@@ -383,9 +522,10 @@ def parse_command_line():
 
     thisdir = os.path.dirname(os.path.abspath(__file__))
     if args.core is None:
-        args.core = os.path.join(thisdir, "probe-core")
         if args.socks5:
-            args.core += "-socks"
+            args.core = os.path.join(thisdir, "probe-core-socks")
+        else:
+            args.core = os.path.join(thisdir, "probe-core-direct")
     if args.config is None:
         args.config = os.path.join(thisdir, "probe.cf")
 

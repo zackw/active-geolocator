@@ -20,12 +20,14 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
+#include <unistd.h>
 #include <sys/mman.h>
 #include <sys/resource.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
-#include <time.h>
-#include <unistd.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
 
 #if !defined HAVE_CLOCK_GETTIME
 # if defined HAVE_MACH_ABSOLUTE_TIME
@@ -370,6 +372,45 @@ load_conn_buffer(int fd)
   return buf;
 }
 
+/* Failure tracking.  If we get three connection timeouts, or three
+   connection failures with error codes that indicate we're not
+   actually communicating with the landmark, we give up trying to
+   reach that landmark.  */
+struct failure
+{
+  uint16_t count;
+  uint16_t errnm;
+};
+#define TOO_MANY_FAILURES 3
+
+static void
+evaluate_connection_result(struct conn_data *cdat, struct failure *ft)
+{
+  switch (cdat->errnm) {
+  case 0:
+  case ECONNREFUSED:
+    /* successfully resolved synchronous connection */
+    return;
+
+  case ETIMEDOUT:
+  case EHOSTUNREACH:
+  case ENETUNREACH:
+    /* failure in the network - not communicating with the landmark */
+    ft->count++;
+    ft->errnm = cdat->errnm;
+    return;
+
+  default: {
+    /* something is profoundly wrong and we probably can't continue */
+    struct in_addr ina;
+    ina.s_addr = cdat->ipv4_addr;
+    fatal_printf("connecting to %s:%d: %s",
+                 inet_ntoa(ina), ntohs(cdat->tcp_port),
+                 strerror(cdat->errnm));
+  }
+  }
+}
+
 /* Main loop, called by main() in each specialization, calls back to
    next_action() in each specialization */
 
@@ -396,6 +437,9 @@ perform_probes(struct conn_buffer *cbuf,
 
   struct conn_internal *cint =
     xcalloc(cbuf->n_conns, sizeof(struct conn_internal), "conn_internal");
+
+  struct failure *failures =
+    xcalloc(cbuf->n_addrs, sizeof(struct failure), "failure tracker");
 
   /* The 'pollvec' array has one more entry than necessary so that
      memmove()s below work as expected when the array is full. */
@@ -424,10 +468,19 @@ perform_probes(struct conn_buffer *cbuf,
     if (n_pending < maxfd - 3 && nxt < n_conns &&
         now - last_conn >= spacing) {
 
-      while (nxt < n_conns &&
-             (cdat[nxt].elapsed != 0 ||  /* skip already completed */
-              cdat[nxt].ipv4_addr == 0)) /* skip blank entries */
-        nxt++;
+      /* Find the next usable connection.  */
+      for (; nxt < n_conns; nxt++) {
+        if (cdat[nxt].elapsed == 0 &&   /* skip already completed */
+            cdat[nxt].ipv4_addr != 0) { /* skip blank entries */
+          struct failure *ft = &failures[cdat[nxt].serial];
+          if (ft->count < TOO_MANY_FAILURES)
+            break;
+
+          cdat[nxt].errnm = ft->errnm;
+          cdat[nxt].elapsed = (uint32_t)-1;
+          cbuf->n_processed++;
+        }
+      }
 
       if (nxt < n_conns) {
         int sock = nonblocking_socket(proxy);
@@ -444,9 +497,11 @@ perform_probes(struct conn_buffer *cbuf,
           pollvec[n_pending].events = events;
           pollvec[n_pending].revents = 0;
           n_pending++;
-        } else
+        } else {
           close(sock);
-
+          cbuf->n_processed++;
+          evaluate_connection_result(&cdat[nxt], &failures[cdat[nxt].serial]);
+        }
         nxt++;
       }
     }
@@ -484,6 +539,7 @@ perform_probes(struct conn_buffer *cbuf,
         n_pending--;
         i--;
         cbuf->n_processed++;
+        evaluate_connection_result(cd, &failures[cd->serial]);
       }
     }
   }

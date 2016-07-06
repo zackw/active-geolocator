@@ -193,8 +193,8 @@ class ConnBuffer:
         self.n_proc  = 0
         self.spacing = spacing
         self.timeout = timeout
-        self.hform   = struct.Struct("=IIII")
-        self.cform   = struct.Struct("=4sHHQ")
+        self.hform   = struct.Struct("=IIIIII")
+        self.cform   = struct.Struct("=I4sHHI")
         self.seg_obj = None
         self.seg_fd  = None
         self.seg_map = None
@@ -225,35 +225,47 @@ class ConnBuffer:
             self.seg_fd = -1
 
     def check_completion(self):
-        _, n_proc, _, _ = self.hform.unpack(self.seg_map[0:self.hform.size])
+        _,_,n_proc,_,_,_ = self.hform.unpack(self.seg_map[0:self.hform.size])
         self.n_proc = n_proc
         return self.n_proc == self.n_conn
 
     def encode_addrs(self):
+        # Assign a serial number to each IP address.  This is only
+        # used internally by probe-core, but it's much easier to
+        # generate them in Python.
+        serial = {}
+        sno = 0
+        for host, port in self.addrs:
+            if host not in serial:
+                serial[host] = sno
+                sno += 1
+
         self.hform.pack_into(self.seg_map, 0,
-                             self.n_conn, 0,
+                             len(serial), self.n_conn, 0,
                              max(int(self.spacing * 1e6), 1000000),
-                             max(int(self.timeout * 1e6), 1000000))
+                             max(int(self.timeout * 1e6), 1000000),
+                             0)
+
         offset = self.hform.size
         for host, port in self.addrs:
             addr = socket.inet_aton(host)
             port = socket.htons(port)
             self.cform.pack_into(self.seg_map, offset,
-                                 addr, port, 0, 0)
+                                 serial[host], addr, port, 0, 0)
             offset += self.cform.size
 
     def decode_results(self):
         offset = self.hform.size
         results = []
         while offset < self.seg_len:
-            addr, port, err, elapsed = \
+            _, addr, port, err, elapsed = \
                 self.cform.unpack_from(self.seg_map, offset)
             host = socket.inet_ntoa(addr)
             port = socket.ntohs(port)
             results.append((
                 host, port,
                 errno.errorcode.get(err, err),
-                elapsed * 1e-9
+                elapsed * 1e-6
             ))
             offset += self.cform.size
 

@@ -52,22 +52,25 @@
 
 struct conn_data
 {
+  uint32_t serial;    /* read - native byte order - serial number of address */
   uint32_t ipv4_addr; /* read - network byte order - target IPv4 address */
   uint16_t tcp_port;  /* read - network byte order - target TCP port */
   uint16_t errnm;     /* write - native byte order - errno code */
-  uint64_t elapsed;   /* write - native byte order - elapsed time in ns */
+  uint32_t elapsed;   /* write - native byte order - elapsed time in ns */
 };
 static_assert(sizeof(struct conn_data) == 16, "conn_data is wrong size");
 
 struct conn_buffer
 {
+  uint32_t n_addrs;     /* read - native byte order - total # addresses */
   uint32_t n_conns;     /* read - native byte order - total # connections */
   uint32_t n_processed; /* read/write - native byte order - # complete */
   uint32_t spacing;     /* read - native byte order - connection spacing, ns */
   uint32_t timeout;     /* read - native byte order - timeout, ns */
+  uint32_t unused;      /* padding, MBZ */
   struct conn_data conns[];
 };
-static_assert(sizeof(struct conn_buffer) == 16, "conn_buffer is wrong size");
+static_assert(sizeof(struct conn_buffer) == 24, "conn_buffer is wrong size");
 
 extern struct conn_buffer *load_conn_buffer(int fd);
 

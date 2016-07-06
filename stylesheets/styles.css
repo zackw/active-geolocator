@@ -1,7 +1,7 @@
 
 body {
   background-color: #fff;
-  padding:50px;
+  padding:1em;
   font: 14px/1.5 Verdana, Arial, Helvetica, sans-serif;
   color:#727272;
   font-weight:400;
@@ -169,7 +169,7 @@ header ul a strong {
 }
 
 section {
-  width:500px;
+  width: 100%;
   float:right;
   padding-bottom:50px;
 }

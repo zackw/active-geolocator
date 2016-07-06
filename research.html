@@ -1,0 +1,48 @@
+<!doctype html>
+<html>
+	<head>
+		<meta charset="utf-8">
+		<meta http-equiv="X-UA-Compatible" content="chrome=1">
+		<title>Active-Geolocator IRB</title>
+
+		<link rel="stylesheet" href="stylesheets/styles.css">
+		<link rel="stylesheet" href="stylesheets/github-light.css">
+		<meta name="viewport" content="width=device-width">
+		<!--[if lt IE 9]>
+		<script src="//html5shiv.googlecode.com/svn/trunk/html5.js"></script>
+		<![endif]-->
+	</head>
+	<body>
+	<div class="wrapper">
+		<div class="logo">
+			<a href="https://www.cylab.cmu.edu/" target="_blank">
+				<img alt="Carnegie Mellon University CyLab" border="0"
+					src="images/main-logo.png">
+			</a>
+			<ul>
+				<li><a href="index.html">Overview and Informed Consent</a></li>
+				<li><a href="instr.html">Detailed Instructions</a></li>
+				<li><a href="research.html">Research Questions</a></li>
+				<li><a href="methods.html">Measurement Methodology</a></li>
+			</ul>
+		</div>
+		<div class="content">
+			<h1>Active Geolocation Project IRB</h1>
+			<h2>Research Questions</h1>
+			<div>
+				<p>As we’ve already mentioned, active geolocation determines where in the world an Internet host is located, by measuring packet round-trip times between the host we want to locate and a number of other hosts (“landmarks”) in known locations. Packets travel through the network at a predictable speed, roughly half the speed of light in vacuum. In principle, it’s as simple as converting each round-trip time to a distance, drawing a bunch of circles on a map, and finding their intersection. In practice, there are complications, but algorithms to deal with them have been floating around the literature for over a decade: <a href="https://www.cs.cornell.edu/~bwong/octant/overview.html">Octant</a> is probably the best-known, and there are dozens of refinements.</p>
+				<p>We want to address two problems with the existing algorithms, and a problem with the databases that most people use to do passive geolocation (just look the IP address up in a table — much more convenient, if you're willing to rely on the company that compiled the database).</p>
+				<p>The algorithms have mostly only been tested in Europe and the USA, which have denser and faster data networks than almost anywhere else. They may be making assumptions that don't hold up in other parts of the world.  It's also unclear how reliable they are when the host to be located is very far away from all the landmarks.  They can probably get the continent right, but are they accurate within the continent?</p>
+				<p>The algorithms are also not designed to handle proxy servers.  If you are funneling all your network traffic through a proxy, you probably want to be sure exactly which country the proxy is in; this affects which laws apply, which online merchants will do business with you, all sorts of things.  So you might like to apply active geolocation, to be very sure where the proxy is.  But you can't directly measure round-trip times to the proxy, only through the proxy and back to your own machine, which might be very far away.  Abstractly, you would expect this to come out as all the round-trip times being slower by a constant factor; is it enough to just subtract that off?  And what is the right way to estimate the constant factor?</p>
+				<p>The databases, meanwhile, seem accurate enough, usually, but they are known to have problems <a href="http://www.sigcomm.org/sites/default/files/ccr/papers/2011/April/1971162-1971171.pdf">[1]</a> &nbsp;<a href="http://fusion.net/story/287592/internet-mapping-glitch-kansas-farm/">[2]</a>, and the companies that compile them will not share their methodology.  By cross-checking the databases with self-reported and measured locations, we hope to quantify how likely the databases are to be in error, and by how much.
+				</p>
+			</div>
+		</div>
+		<footer>
+			<p>Hosted on GitHub Pages &mdash; Theme by <a href="https://github.com/orderedlist">orderedlist</a></p>
+		</footer>
+	</div>
+	<script src="javascripts/scale.fix.js"></script>
+
+	</body>
+</html>

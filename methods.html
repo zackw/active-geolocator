@@ -1,0 +1,46 @@
+<!doctype html>
+<html>
+	<head>
+		<meta charset="utf-8">
+		<meta http-equiv="X-UA-Compatible" content="chrome=1">
+		<title>Active-Geolocator IRB</title>
+
+		<link rel="stylesheet" href="stylesheets/styles.css">
+		<link rel="stylesheet" href="stylesheets/github-light.css">
+		<meta name="viewport" content="width=device-width">
+		<!--[if lt IE 9]>
+		<script src="//html5shiv.googlecode.com/svn/trunk/html5.js"></script>
+		<![endif]-->
+	</head>
+	<body>
+	<div class="wrapper">
+		<div class="logo">
+			<a href="https://www.cylab.cmu.edu/" target="_blank">
+				<img alt="Carnegie Mellon University CyLab" border="0"
+					src="images/main-logo.png">
+			</a>
+			<ul>
+				<li><a href="index.html">Overview and Informed Consent</a></li>
+				<li><a href="instr.html">Detailed Instructions</a></li>
+				<li><a href="research.html">Research Questions</a></li>
+				<li><a href="methods.html">Measurement Methodology</a></li>
+			</ul>
+		</div>
+		<div class="content">
+			<h1>Active Geolocation Project IRB</h1>
+			<h2>Measurement Methodology</h1>
+			<div>
+				<p>Historically, active geolocation measurements have been made with either <span class="code">ping</span> or <span class="code">traceroute</span>, and the algorithms in the literature can be divided into those that use only round-trip information versus those that use route traces. We’re interested in taking measurements through proxies, and not all proxies allow one to send the ICMP messages used by <span class="code">ping</span> or control the time-to-live as <span class="code">traceroute</span> does. The core SOCKS protocol, for instance, can only make TCP connections. We are developing a more user-friendly measurement client that runs in a Web page; this environment is even more restricted, and (for our purposes) can only make TLS connections. Therefore, we can only record round-trip time information, and we must do it with TCP. The simplest way to do this is to connect to a <b><em>closed port</em></b>; the destination host will respond to our SYN packet with an RST packet, and our connection attempt will resolve (unsuccessfully, but that doesn’t matter) after only one round-trip. For the command-line measurement client, connecting to an open port is also workable; the OS typically reports a successful connection when it receives the SYN/ACK packet, which is also only one round-trip. If this happens, it immediately closes the connection, having neither sent nor received data.</p>
+				<p>The measurement client retrieves a list of landmarks from our server. It attempts to make 10 connections to each landmark, in a random order; it avoids making more than one connection to any given landmark at a time, and the connections are limited to no more than ten per second. Connections that don’t resolve within ten seconds are treated as having failed. For each connection it records the IP address, port, success or failure, and elapsed time.  When all measurements have completed, they are reported back to our server, along with the self-reported location of the computer making the measurements (and the proxy, if any). The server annotates each report with the client’s IP address.</p>
+				<p>The Python component of the program is responsible for communicating with the server (over HTTPS), selecting a random order in which to perform queries, and pre-resolving all hostnames to IP addresses. The C component, invoked as a subprocess, is responsible for taking the actual measurements; this eliminates the overhead of the Python interpreter in the critical timing loop. VPN proxies are transparent to the core measurement logic, but for SOCKS proxies we use an alternative C component that speaks the SOCKS protocol.
+				</p>
+			</div>
+		</div>
+		<footer>
+			<p>Hosted on GitHub Pages &mdash; Theme by <a href="https://github.com/orderedlist">orderedlist</a></p>
+		</footer>
+	</div>
+	<script src="javascripts/scale.fix.js"></script>
+
+	</body>
+</html>

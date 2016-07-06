@@ -101,13 +101,13 @@ th {
 img {
   max-width:100%;
 }
-/*
+
 header {
-  width:270px;
+  width:auto;
   float:left;
   position:fixed;
   -webkit-font-smoothing:subpixel-antialiased;
-}*/
+}
 
 header ul {
   list-style:none;

@@ -53,7 +53,7 @@ a:hover small {
 }
 
 .wrapper {
-  width:860px;
+  width:100%;
   margin:0 auto;
 }
 
@@ -101,13 +101,13 @@ th {
 img {
   max-width:100%;
 }
-
+/*
 header {
   width:270px;
   float:left;
   position:fixed;
   -webkit-font-smoothing:subpixel-antialiased;
-}
+}*/
 
 header ul {
   list-style:none;

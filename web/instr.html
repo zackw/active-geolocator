@@ -2,27 +2,23 @@
 <html>
 <head>
   <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>Active Geolocation Project — Instructions</title>
   <link rel="stylesheet" href="s/styles.css">
 </head>
 <body>
-  <div class="wrapper">
-    <div class="logo">
-      <a href="https://www.cylab.cmu.edu/"><img alt=
-      "Carnegie Mellon University CyLab" src="s/main-logo.png"></a>
-    </div>
-    <div class="navbar">
-      <ul>
-        <li><a href="index.html">Overview and Informed Consent</a></li>
-        <li><a id="active" href="instr.html">Detailed Instructions</a></li>
-        <li><a href="research.html">Research Questions</a></li>
-        <li><a href="methods.html">Measurement Methodology</a></li>
-      </ul>
-    </div>
-    <div class="content">
-      <h1>Active Geolocation Project</h1>
-      <h2>Detailed Instructions</h2>
-      <p>The first step in running our measurement software is to determine
+  <a id="logo" href="https://www.cylab.cmu.edu/"><img
+     alt="Carnegie Mellon University CyLab" src="s/main-logo.png"></a>
+  <ul id="navbar">
+    <li><a href="index.html">Overview and Informed Consent</a></li>
+    <li><a id="active" href="instr.html">Detailed Instructions</a></li>
+    <li><a href="research.html">Research Questions</a></li>
+    <li><a href="methods.html">Measurement Methodology</a></li>
+  </ul>
+  <div id="content">
+    <h1>Active Geolocation Project</h1>
+    <h2>Detailed Instructions</h2>
+    <p>The first step in running our measurement software is to determine
       the latitude and longitude of each computer you plan to run it on, to
       at least 1/100 of a degree. This is roughly half an arcminute, or 1km
       of position uncertainty, depending on the latitude. The best way to do
@@ -43,10 +39,10 @@
       <a href="http://www.gps-coordinates.net/">3</a>). In this case, please
       make sure to feed the latitude and longitude back into a mapping
       service and verify that it’s accurate.</p>
-      <p><em>Don’t</em> look the computer’s IP address up in a geolocation
+    <p><em>Don’t</em> look the computer’s IP address up in a geolocation
       service to get its latitude and longitude, because one of the goals of
       this project is to audit the accuracy of those services.</p>
-      <p>The measurement software is only available as a Git checkout. It has
+    <p>The measurement software is only available as a Git checkout. It has
       two components, one written in Python and the other in C. The Python
       component has no dependencies outside the standard library, and is
       known to work with versions 2.7, 3.4, and 3.5 of the interpreter. The C
@@ -60,31 +56,27 @@
       source code</a> of both components before running them. You may also be
       interested in reading our high-level <a href="methods.html">description
       of how it works</a>.</p>
-      <p>Once you have the latitude and longitude of the computer, open a
+    <p>Once you have the latitude and longitude of the computer, open a
       shell window and type the following commands:</p>
-      <ul class="code">
-        <li>git clone https://github.com/zackw/active-geolocator</li>
-        <li>cd active-geolocator/measurement-client</li>
-        <li>./configure</li>
-        <li>make</li>
-        <li>./probe --latitude=&lt;LATITUDE&gt;
-        --longitude=&lt;LONGITUDE&gt;</li>
-      </ul>
-      <p>where <span class="code">&lt;LATITUDE&gt;</span> and <span class=
-      "code">&lt;LONGITUDE&gt;</span> are the latitude and longitude you
-      looked up earlier, as decimal degrees. Use negative numbers for south
-      of the equator / west of Greenwich, and remember to round off the
-      numbers to the precision you are comfortable with. If you don’t want
-      the data you submit to be included in any future publication of a
-      redacted version of our database, append <span class=
-      "code">--no-publication</span> to the <span class="code">probe</span>
+<pre>git clone https://github.com/zackw/active-geolocator
+cd active-geolocator/measurement-client
+./configure
+make
+./probe --latitude=&lt;LATITUDE&gt; --longitude=&lt;LONGITUDE&gt;</pre>
+    <p>where <code>&lt;LATITUDE&gt;</code> and <code>&lt;LONGITUDE&gt;</code>
+      are the latitude and longitude you looked up earlier, as decimal
+      degrees. Use negative numbers for south of the equator / west of
+      Greenwich, and remember to round off the numbers to the precision you
+      are comfortable with. If you don’t want the data you submit to be
+      included in any future publication of a redacted version of our
+      database, append <code>--no-publication</code> to the <code>probe</code>
       command.</p>
-      <p>The final <span class="code">probe</span> command may take two or
+    <p>The final <code>probe</code> command may take two or
       three hours to run; it reports its progress once a minute. The results
       are automatically uploaded to the project website, and are also written
-      to a file <span class="code">probe-result-YYYY-MM-DD-N.json</span> in
+      to a file <code>probe-result-YYYY-MM-DD-N.json</code> in
       the working directory.</p>
-      <p>By running <span class="code">probe</span>, you assert that you are
+    <p>By running <code>probe</code>, you assert that you are
       age 18 or older, and you consent to the collection of your computer’s
       IP address, its latitude and longitude as reported by you, and the time
       it takes network messages to reach roughly 500 other computers and
@@ -92,42 +84,32 @@
       required to preserve all research data for at least three years, and
       could be required to disclose your location and IP address by a future
       law, regulation, subpoena or court order.</p>
-      <p>If any of the above commands fail, please <a href=
+    <p>If any of the above commands fail, please <a href=
       "https://github.com/zackw/active-geolocator/issues/new">file an
       issue</a>. We will need to see the unedited, complete output of the
       commands up to the point where they failed, and we will also need to
       know which operating system and compiler you are using. If a file named
-      <span class="code">config.log</span> exists in the working directory,
-      please attach it to the issue (you may have to rename it <span class=
-      "code">config.txt</span> first, because Github). Note: to maintain the
-      confidentiality of your IP address and location, do <em>not</em> attach
-      any <span class="code">probe-result-*.json</span> files to Github
-      issues.</p>
-      <p>If you have access to computers in several cities, please do run the
+      <code>config.log</code> exists in the working directory, please attach
+      it to the issue (you may have to rename it <code>config.txt</code>
+      first, because Github). Note: to maintain the confidentiality of your IP
+      address and location, do <em>not</em> attach
+      any <code>probe-result-*.json</code> files to Github issues.</p>
+    <p>If you have access to computers in several cities, please do run the
       software on all of them. It’s not as helpful to run it on more than one
       computer in the <em>same</em> city, unless their routes to the Internet
       backbone are very different (for instance, if one gets its connectivity
       from a residential ISP, and another from a cellphone system).</p>
-      <p>If you have access to VPN or SOCKSv5 proxies, and you can find out
+    <p>If you have access to VPN or SOCKSv5 proxies, and you can find out
       the accurate location of the proxy <em>as well as</em> the client host,
       please do run the measurement through the proxy. For VPNs, activate the
       VPN as the default route, then do:</p>
-      <ul class="code">
-        <li>./probe --latitude=&lt;CLIENT LAT&gt; --longitude=&lt;CLIENT
-        LONG&gt; \</li>
-        <li>&nbsp;&nbsp;&nbsp;&nbsp;--proxy-latitude=&lt;PROXY LAT&gt;
-        --proxy-longitude=&lt;PROXY LONG&gt;</li>
-      </ul>
-      <p>For SOCKS you must explicitly state the proxy’s address.
+<pre>./probe --latitude=&lt;CLIENT LAT&gt; --longitude=&lt;CLIENT LONG&gt; \
+        --proxy-latitude=&lt;PROXY LAT&gt; --proxy-longitude=&lt;PROXY LONG&gt;</pre>
+    <p>For SOCKS you must explicitly state the proxy’s address.
       Authentication is not supported.</p>
-      <ul class="code">
-        <li>./probe --latitude=&lt;CLIENT LAT&gt; --longitude=&lt;CLIENT
-        LONG&gt; \</li>
-        <li>&nbsp;&nbsp;&nbsp;&nbsp;--proxy-latitude=&lt;PROXY LAT&gt;
-        --proxy-longitude=&lt;PROXY LONG&gt; \</li>
-        <li>&nbsp;&nbsp;&nbsp;&nbsp;--socks5=&lt;HOST:PORT&gt;</li>
-      </ul>
-    </div>
+<pre>./probe --latitude=&lt;CLIENT LAT&gt; --longitude=&lt;CLIENT LONG&gt; \
+        --proxy-latitude=&lt;PROXY LAT&gt; --proxy-longitude=&lt;PROXY LONG&gt; \
+        --socks5=&lt;HOST:PORT&gt;</pre>
   </div>
 </body>
 </html>

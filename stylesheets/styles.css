@@ -158,10 +158,6 @@ ul + p {
     margin: 0 0 17.5px;
   }
 
-  h1, h2, h3 {
-    line-height:0.96;
-  }
-
   h1 {
     font-size:24.5px;
   }
@@ -253,10 +249,6 @@ ul + p {
     margin: 0 0 15px;
   }
 
-  h1, h2, h3 {
-    line-height:0.822;
-  }
-
   h1 {
     font-size:21px;
   }
@@ -280,146 +272,138 @@ ul + p {
   }
 
   .logo li {
-    width:87.5px;
-    border-right:0.875px solid #e0e0e0;
-    padding-left: 21px;
-    padding-right: 21px;
-    padding-top: 15.75px;
-    padding-bottom: 15.75px;
-    margin-left: 10.5px;
-    font-size: 10.5px;
+    width:75px;
+    border-right:0.75px solid #e0e0e0;
+    padding-left: 18px;
+    padding-right: 18px;
+    padding-top: 13.5px;
+    padding-bottom: 13.5px;
+    margin-left: 9px;
+    font-size: 9px;
   }
 
   .content {
-    margin: 8.75px;
-    padding-top: 26.25px;
-    margin-left: 201.25px;
-    padding-bottom:43.75px;
+    margin: 7.5px;
+    padding-top: 22.5px;
+    margin-left: 172.5px;
+    padding-bottom:37.5px;
   }
 
   footer {
-    margin-top: 43.75px;
-    bottom:8.75px;
+    margin-top: 37.5px;
+    bottom:7.5px;
   }
 
   footer p {
-    font-size: 5.25pt;
+    font-size: 4.5pt;
   }
 
   .code {
-    margin: 4.4px 0px 4.4px 0px;
+    margin: 3.77px 0px 3.77px 0px;
     font-family: monospace;
     color: black;
   }
 
   p + p {
-    margin-bottom: 4.4px;
+    margin-bottom: 3.77px;
   }
 
   ul + p {
-    margin-top: 4.4px;
+    margin-top: 3.77px;
   }
 
   #active {
-    font-size: 10.5px;
+    font-size: 9px;
   }
 }
 
 @media print, screen and (max-width: 480px) {
   .logo img {
-    width:144px;
-    height:68.6px;
+    width:96px;
+    height:45.7px;
   }
 
   body {
-    padding:10.5px;
+    padding:7.5px;
     font: 8.75px Verdana, Arial, Helvetica, sans-serif;
   }
 
   h1, h2, h3, h4, h5, h6 {
-    margin:0 0 17.5px;
+    margin:0 0 12.5px;
   }
 
   #first {
-    margin: 0 0 17.5px;
+    margin: 0 0 12.5px;
   }
 
   p:last-child {
-    margin: 0 0 17.5px;
-  }
-
-  h1, h2, h3 {
-    line-height:0.96;
+    margin: 0 0 12.5px;
   }
 
   h1 {
-    font-size:24.5px;
+    font-size:17.5px;
   }
 
   h2 {
-    font-size: 15.75px;
+    font-size: 11.25px;
   }
 
   h3 {
-    font-size: 12.3px;
-  }
-
-  a {
-    text-decoration:none;
+    font-size: 8.79px;
   }
 
   .logo {
-    margin: 8.75px;
+    margin: 6.25px;
   }
 
   .logo ul {
-    margin-top: 10.5px;
-    margin-bottom: 10.5px;
-    width: 147px;
+    margin-top: 7.5px;
+    margin-bottom: 7.5px;
+    width: 105px;
   }
 
   .logo li {
-    width:87.5px;
-    border-right:0.875px solid #e0e0e0;
-    padding-left: 21px;
-    padding-right: 21px;
-    padding-top: 15.75px;
-    padding-bottom: 15.75px;
-    margin-left: 10.5px;
-    font-size: 10.5px;
+    width:62.5px;
+    border-right:0.625px solid #e0e0e0;
+    padding-left: 15px;
+    padding-right: 15px;
+    padding-top: 11.25px;
+    padding-bottom: 11.25px;
+    margin-left: 7.5px;
+    font-size: 7.5px;
   }
 
   .content {
-    margin: 8.75px;
-    padding-top: 26.25px;
-    margin-left: 201.25px;
-    padding-bottom:43.75px;
+    margin: 6.25px;
+    padding-top: 18.75px;
+    margin-left: 143.75px;
+    padding-bottom:31.25px;
   }
 
   footer {
-    margin-top: 43.75px;
-    bottom:8.75px;
+    margin-top: 31.25px;
+    bottom:6.25px;
   }
 
   footer p {
-    font-size: 5.25pt;
+    font-size: 3.75pt;
   }
 
   .code {
-    margin: 4.4px 0px 4.4px 0px;
+    margin: 3.14px 0px 3.14px 0px;
     font-family: monospace;
     color: black;
   }
 
   p + p {
-    margin-bottom: 4.4px;
+    margin-bottom: 3.14px;
   }
 
   ul + p {
-    margin-top: 4.4px;
+    margin-top: 3.14px;
   }
 
   #active {
-    font-size: 10.5px;
+    font-size: 7.5px;
   }
 }

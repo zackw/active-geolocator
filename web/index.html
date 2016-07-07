@@ -1,0 +1,76 @@
+<!doctype html>
+<html>
+	<head>
+		<meta charset="utf-8">
+		<meta http-equiv="X-UA-Compatible" content="chrome=1">
+		<title>Active Geolocation Project IRB - Overview</title>
+
+		<link rel="stylesheet" href="stylesheets/styles.css">
+		<link rel="stylesheet" href="stylesheets/github-light.css">
+		<meta name="viewport" content="width=device-width">
+		<!--[if lt IE 9]>
+		<script src="//html5shiv.googlecode.com/svn/trunk/html5.js"></script>
+		<![endif]-->
+	</head>
+	<body>
+	<div class="wrapper">
+		<div class="logo">
+			<a href="https://www.cylab.cmu.edu/" target="_blank">
+				<img alt="Carnegie Mellon University CyLab" border="0"
+					src="images/main-logo.png">
+			</a>
+			<ul>
+				<li><a id="active" href="index.html">Overview and Informed Consent</a></li>
+				<li><a href="instr.html">Detailed Instructions</a></li>
+				<li><a href="research.html">Research Questions</a></li>
+				<li><a href="methods.html">Measurement Methodology</a></li>
+			</ul>
+		</div>
+		<div class="content">
+			<h1>Active Geolocation Project IRB</h1>
+			<h2>Overview and Informed Consent</h1>
+			<p id="first">This website is part of a research study conducted by <b>Nicolas Christin</b> and <b>Zachary Weinberg</b> at Carnegie Mellon University.
+			The purpose of our research is to test “active geolocation” algorithms. These attempt to determine where in the world a computer is, by measuring how long it takes network messages from that computer to reach other computers in known locations. We test them by making measurements from computers in known locations. We can then compare the position calculated by each algorithm with the truth. We’re also comparing with the position reported by commercial geolocation services (such as <a href="https://www.maxmind.com" target="_blank">MaxMind</a> and <a href="http://geobytes.com" target="_blank">Geobytes</a>) for the computer’s IP address.</p>
+			<h3>Participant Requirements</h3>
+			<div>
+				<p>We need volunteers who are willing to run our measurement software on their computers, and tell us where they are. We’re especially interested in data reported from computers that are not in Europe nor North America, but data from anywhere is useful. For legal reasons, you must be at least 18 years old to volunteer.</p>
+				<p>Presently the software can only be run from a Unix command line; you will need to retrieve it from a Git repository, you will need a recent Python interpreter (2.7, 3.4, and 3.5 are all known to work), and you will also need to compile a small, standalone C program (not a Python extension). If you don’t know what these terms mean, or how to do these things, please don’t try to help us now; stay tuned for the user-friendlier software which is in development.</p>
+			</div>
+			<h3>Direct Risks, Benefits, and Compensation</h3>
+			<div>
+				<p>Volunteering requires a few minutes of your time and attention, to determine the latitude and longitude of each computer you’re going to run our measurement program on, then to download the software and set it running. This will be no more difficult or demanding than typical online activities.</p>
+				<p>The program itself will need to run for two to four hours, with the computer continuously connected to the Internet, but you don’t have to do anything more after it’s started. It requires only a trivial amount of disk space and CPU time. It generates a small amount of network traffic —less than 100kB in total—spread over several hours. It’s careful not to place a significant load on any of the computers it sends network messages to, so those computers’ operators will not be annoyed with you.</p>
+				There is no direct benefit to you from participating in this study. We cannot offer any compensation, but neither should it cost you anything to participate (we recommend not running the measurements on a network connection that charges you by the minute). We hope a small contribution to the advancement of science is its own reward.</p>
+			</div>
+			<h3>Confidentiality of Information Collected</h3>
+			<div>
+				<p>We ask you to tell us the latitude and longitude of each computer you run the measurement software on, we record each computer’s public IP address automatically, and the measurements themselves reveal the computer’s location, although quite imprecisely. This data is considered “personally identifiable information” under US law. Its disclosure could harm you. For instance, if you reveal to us the location of a computer in your house, and then our database is stolen, the thief would be able to associate your IP address with a location, more precisely than they can from the commercial geolocation services.</p>
+				<p>To safeguard against this risk, we take several precautions. You are encouraged to round off the latitude and longitude to two decimal places; this means we only learn each location to within one kilometer. We don’t ask for any other information about you; we don’t, for instance, learn your name or your email address. All of the data we collect is encrypted in transmission from your computer to our database. The database is not encrypted, but it is isolated on a computer under our physical control, and only the researchers involved in this study have access to it.</p>
+				<p>We will only disclose IP addresses and precise locations to anyone else if required to do so by a future law, regulation, subpoena or court order. We might, in the future, publish a redacted version of the database for other researchers to use. All the latitudes and longitudes will be rounded to two decimal places, and the IP addresses will be replaced with “<a href="https://en.wikipedia.org/wiki/Autonomous_system">autonomous system</a>” numbers, which identify each computer’s ISP but not the computer itself. If you don’t want us to reveal even this much information, you can tell us so when you run the software.</p>
+				<p>All that said, if there’s some reason why a particular person must not find out where you live, we recommend you don’t help us, at least not with a computer in your house.</p>
+			</div>
+			<h3>Right to Ask Questions &amp; Contact Information</h3>
+			<div>
+				<p>If you have any questions about this study, you should feel free to ask them before proceeding, by contacting Zachary Weinberg at <a href=mailto:zackw@cmu.edu>zackw@cmu.edu</a>, or Nicolas Christin at <a href=mailto:nicolasc@cmu.edu>nicolasc@cmu.edu</a>. If you have questions later, desire additional information, or wish to withdraw your participation, you can also contact us at the above addresses. You can read more about <a href="research.html">the research questions we’re investigating</a>, or <a href="methods.html">the measurement methodology</a>, on this website.</p>
+				<p>If you have questions pertaining to your rights as a research participant; or to report concerns to this study, you should contact the Office of Research integrity and Compliance at Carnegie Mellon University.
+				<br>
+				Email: <a href=mailto:irb-review@andrew.cmu.edu>irb-review@andrew.cmu.edu</a>
+				<br>
+				Phone: <a href=tel:+14122681901>412-268-1901</a> or <a href=+14122685460>412-268-5460</a>.</p>
+			</div>
+			<h3>Voluntary Participation</h3>
+			<div>
+				<p>Your participation in this research is voluntary. If you have decided that you want to participate, please proceed to the 
+				<a href="instr.html">detailed instructions for running the measurement program</a>.</p>
+				<p>We are not asking you to sign a formal statement of consent, because that would involve recording your name. By running the measurement program, you assert that you are age 18 or older and you have read and understood all the above information, and you consent to the collection of your computer’s IP address, its latitude and longitude as reported by you, and the time it takes network messages to reach roughly 500 other computers and return. You understand and agree that Carnegie Mellon is legally required to preserve all research data for at least three years, and could be required to disclose your location and IP address by a future law, regulation, subpoena or court order.
+				</p>
+			</div>
+		</div>
+		<footer>
+			<p>Hosted on GitHub Pages</p>
+		</footer>
+	</div>
+	<script src="javascripts/scale.fix.js"></script>
+
+	</body>
+</html>

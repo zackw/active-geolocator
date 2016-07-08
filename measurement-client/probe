@@ -146,7 +146,8 @@ if shm_open is not None:
             mode = 384 # 0600
             for nm in _RandomNameSequence():
                 xnm = "/"+nm
-                fd = shm_open(xnm, flags, mode)
+                exnm = xnm.encode("utf-8")
+                fd = shm_open(exnm, flags, mode)
                 if fd >= 0:
                     break
                 err = ctypes.get_errno()
@@ -156,7 +157,7 @@ if shm_open is not None:
 
             self._fd = fd
 
-            rv = shm_unlink(xnm)
+            rv = shm_unlink(exnm)
             if rv:
                 err = ctypes.get_errno()
                 os.close(self._fd)
@@ -306,9 +307,9 @@ def report_results(cfg, results):
         try:
             # O_EXCL is not accessible via plain open() in py2.
             fd = os.open(tmpl.format(i), os.O_WRONLY|os.O_CREAT|os.O_EXCL)
-            with os.fdopen(fd, "wt") as f:
+            with os.fdopen(fd, "wb") as f:
                 f.write(blob)
-                f.write("\n")
+                f.write(b"\n")
             break
 
         except OSError as e:
@@ -326,17 +327,18 @@ def report_results(cfg, results):
     # Push the data to the server.
     try:
         sys.stderr.write("Reporting results to server...")
-        with urlopen(cfg.results_url, urlencode([('blob', blob)])) as f:
+        postdata = urlencode([('blob', blob)]).encode('utf-8')
+        with urlopen(cfg.results_url, postdata) as f:
             # The expected response is code 204 and no output.
             code = f.getcode()
             body = f.read()
-            if code != 204 or body != "":
+            if code != 204 or body != b"":
                 sys.stderr.write(
                     "unexpected response to POST {}:\n"
                     "  code    = {}\n"
                     "  headers = {!r}\n"
                     "  body    = {!r}\n"
-                    .format(code, f.info().headers, body))
+                    .format(cfg.results_url, code, f.info().items(), body))
                 sys.exit(1)
     except URLError as e:
         sys.stderr.write("\n{}:\n   {}\n".format(cfg.landmark_url, e))
@@ -434,7 +436,8 @@ def get_landmark_list(cfg):
         sys.stderr.write("Retrieving landmark list...")
         sys.stderr.flush()
         with urlopen(cfg.landmark_url) as f:
-            landmarks = validate_landmark_list(json.load(f))
+            landmarks = validate_landmark_list(
+                json.loads(f.read().decode("utf-8")))
             sys.stderr.write("ok, {} landmarks\n".format(len(landmarks)))
             setattr(cfg, "n_landmarks", len(landmarks))
             return landmarks

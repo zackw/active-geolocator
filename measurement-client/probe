@@ -528,6 +528,10 @@ def parse_command_line():
     ap.add_argument("--socks5", metavar="ADDR:PORT",
                     help="Address of a SOCKSv5 proxy to use.")
 
+    ap.add_argument("--no-publication", action="store_true",
+                    help="If the database is ever published, don't include "
+                    "these measurements.")
+
     args = ap.parse_args()
     if ((not args.location_unknown
          and (args.latitude is None or args.longitude is None))

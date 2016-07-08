@@ -126,7 +126,7 @@ number but not its IP address.  If you don’t want the data you submit
 to be included in such a publication, append `--no-publication` to the
 `probe` command.
 
-[website]: https://hacks.owlfolio.org/active-geo/
+[website]: https://research.owlfolio.org/active-geo/
 [measurement-client]: https://github.com/zackw/active-geolocator/tree/master/measurement-client
 [GPS]: https://en.wikipedia.org/wiki/Global_Positioning_System
 [mygps]: https://play.google.com/store/apps/details?id=com.gpscoordinatesandlocation

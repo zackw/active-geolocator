@@ -395,6 +395,7 @@ evaluate_connection_result(struct conn_data *cdat, struct failure *ft)
   case ETIMEDOUT:
   case EHOSTUNREACH:
   case ENETUNREACH:
+  case EINPROGRESS:
     /* failure in the network - not communicating with the landmark */
     ft->count++;
     ft->errnm = cdat->errnm;

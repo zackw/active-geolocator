@@ -244,10 +244,10 @@ main(int argc, char **argv)
   memset(&hints, 0, sizeof hints);
   hints.ai_family = AF_UNSPEC;
   hints.ai_socktype = SOCK_STREAM;
-  int gaierr = getaddrinfo(argv[4], argv[5], &hints, &proxy);
+  int gaierr = getaddrinfo(argv[1], argv[2], &hints, &proxy);
   if (gaierr)
     fatal_printf("error parsing proxy address '%s:%s': %s\n",
-                 argv[4], argv[5], gai_strerror(gaierr));
+                 argv[1], argv[2], gai_strerror(gaierr));
 
   uint32_t maxfd = close_unnecessary_fds();
 

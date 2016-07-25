@@ -23,6 +23,7 @@ measurement-client/probe-result-*.json
 .#*
 \#*#
 *~
+.ipynb_checkpoints/
 
 # OSX junk
 .DS_Store

@@ -7,6 +7,7 @@ round-trip time.
 
 import collections
 from functools import partial
+import warnings
 
 import numpy as np
 from scipy import optimize, spatial
@@ -14,6 +15,19 @@ from scipy import optimize, spatial
 class _Line(collections.namedtuple("__Line", ("m", "b"))):
     def __call__(self, x):
         return self.m * x + self.b
+
+class _Cubic(collections.namedtuple("__Cubic", ("a", "b", "c", "d"))):
+    def __call__(self, x):
+        a, b, c, d = self
+        return ((a*x + b)*x + c)*x + d
+
+class _ScaledCubic(collections.namedtuple(
+        "__ScaledCubic",
+        ("a", "b", "c", "d", "xm", "ym", "rxr", "yr"))):
+    def __call__(self, x):
+        a, b, c, d, xm, ym, xr, yr = self
+        x = (x - xm)*rxr
+        return (((a*x + b)*x + c)*x + d)*yr + ym
 
 def _interp_segments(segs, x):
     """Interpolate or extrapolate the polyline defined by SEGS at the
@@ -41,6 +55,18 @@ class _PolyLine:
 
     def __call__(self, x):
         return _interp_segments(self._points, x)
+
+class MinimizationFailedWarning(warnings.UserWarning):
+    def __init__(self, optresult):
+        warnings.UserWarning.__init__("minimization failed: " +
+                                      optresult.message)
+        self.details = optresult
+
+def warn_if_minimization_failed(optresult):
+    if not optresult.success:
+        warnings.warn(
+            MinimizationFailedWarning(optresult),
+            stacklevel=2)
 
 class Calibration:
     """Abstract base class."""
@@ -290,3 +316,124 @@ class QuasiOctant(Calibration):
             'max': _PolyLine(lower),
             'min': _PolyLine(upper)
         }
+
+class Spotter(Calibration):
+    """An algorithm derived from "Spotter: A Model-Based Active Geolocation
+    Service", INFOCOM 2011.
+
+    Spotter computes the mean and standard deviation of distance as a
+    function of delay, and fits "a polynomial" to each curve.  Then,
+    given a single delay D, it predicts that the distance to the
+    target will be distributed as a Gaussian with mean and standard
+    deviation given by the fitted curves.  The paper does not specify
+    the degree of the polynomial, the exact curve-fitting procedure,
+    nor what to do with a _group_ of observed delays, so we have
+    filled in these gaps as follows.  We use cubic polynomials, fit by
+    least squares, with the additional constraints that each curve
+    must be increasing everywhere and must go through the minimum
+    observation.  Given a group of observed delays, we use its median
+    as the single representative delay.
+
+    Finally, to satisfy the interface of Calibration, distance_range()
+    uses 5*sigma as the outer limits of plausibility in both
+    directions.
+    """
+
+    def __init__(self, obs):
+        """OBS should be an N-by-2 matrix where the first column is distances
+           and the second column is round-trip times."""
+
+        def windowed_moments(xs, ys, nknots=100):
+            edges = np.linspace(xs[0], xs[-1], nknots + 4)
+            knots = edges[2:-2]
+            mu    = np.zeros_like(knots)
+            sigma = np.zeros_like(knots)
+            for i, (lo, hi) in enumerate(zip(edges[:-4], edges[4:])):
+                ind = (xs >= lo) & (xs <= hi)
+                blk = ys[ind]
+                if len(blk) > 0:
+                    mu[i] = np.mean(blk)
+                    sigma[i] = np.std(blk)
+                else:
+                    mu[i] = math.nan
+                    sigma[i] = math.nan
+
+            return (knots, mu, sigma)
+
+        def fit_cubic_constrained(xs, ys):
+
+            # The function to be minimized.  This is the least-squares
+            # error of a cubic polynomial with coefficients COEF,
+            # applied to data points (xs, ys).
+            def lse_cubic(coef, xs, ys):
+                zs = _Cubic(*coef)(xs)
+                resid = zs - ys
+                return resid.dot(resid)
+
+            # Any smooth function is increasing everywhere if and only if
+            # its derivative is positive everywhere.  The derivative of a
+            # cubic ax^3 + bx^2 + cx + d is a quadratic (3a)x^2 + (2b)x + c,
+            # and a quadratic Ax^2 + Bx + C is positive everywhere when
+            # A > 0 and B^2 - 4AC < 0 (that is, the parabola is concave
+            # upward and does not touch the x-axis).  minimize() wants
+            # inequality constraints of the form g(coef) >= 0.
+            def constr_concave_up(coef):
+                return coef[0]*3
+            def constr_det_negative(coef):
+                A = coef[0]*3
+                B = coef[1]*2
+                C = coef[2]
+                return -(B*B - 4*A*C)
+
+            # Scale the data to the unit square in both directions, to
+            # avoid "loss of precision" errors.
+            ymin   = ys.min()
+            ymax   = ys.max()
+            yrang  = ymax - ymin
+            ryrang = 1/yrang
+
+            xmin   = xs.min()
+            xmax   = xs.max()
+            xrang  = xmax - xmin
+            rxrang = 1/xrang
+
+            xss = (xs-xmin) * rxrang
+            yss = (ys-ymin) * ryrang
+
+            result = optimize.minimize(
+                fun    = lse_cubic,
+                args   = (xss, yss),
+                # initial linear approximation
+                x0     = np.array([0, 0, 1, 0]),
+                # require cubic to be increasing everywhere (see above)
+                constraints = [
+                    { 'type': 'ineq', 'fun': constr_concave_up },
+                    { 'type': 'ineq', 'fun': constr_det_negative }
+                ],
+                # require y-intercept to be nonnegative
+                bounds = [
+                    (None, None), (None, None), (None, None), (0, None)
+                ],
+                # scipy 0.17.1's default method for constrained
+                # optimization; pinned for reproducibility
+                method = 'SLSQP',
+                # because of the constraints, the solver may need
+                # extra iterations
+                options = { 'maxiter': 1000 }
+            )
+            warn_if_minimization_failed(result)
+            return _ScaledCubic(*result.x, xmin, ymin, rxrang, yrang)
+
+        obs = discard_infeasible(obs)
+        if obs.shape[0] == 0:
+            raise ValueError("not enough feasible observations")
+
+        fxw, fmw, fsw = windowed_moments(obs[:,1], obs[:,0])
+        self._mu = fit_cubic_constrained(fxw, fmw)
+        self._sigma = fit_cubic_constrained(fxw, fsw)
+
+    def distance_range(self, rtts):
+        med_rtt = np.median(rtts)
+        mu = self._mu(med_rtt)
+        s5 = self._sigma(med_rtt) * 5
+        return (max(mu - s5, 0), max(mu + s5, 0))

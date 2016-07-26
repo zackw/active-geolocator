@@ -7,6 +7,7 @@ round-trip time.
 
 import collections
 from functools import partial
+import math
 import warnings
 
 import numpy as np
@@ -25,7 +26,7 @@ class _ScaledCubic(collections.namedtuple(
         "__ScaledCubic",
         ("a", "b", "c", "d", "xm", "ym", "rxr", "yr"))):
     def __call__(self, x):
-        a, b, c, d, xm, ym, xr, yr = self
+        a, b, c, d, xm, ym, rxr, yr = self
         x = (x - xm)*rxr
         return (((a*x + b)*x + c)*x + d)*yr + ym
 
@@ -56,16 +57,17 @@ class _PolyLine:
     def __call__(self, x):
         return _interp_segments(self._points, x)
 
-class MinimizationFailedWarning(warnings.UserWarning):
-    def __init__(self, optresult):
-        warnings.UserWarning.__init__("minimization failed: " +
-                                      optresult.message)
+class MinimizationFailedWarning(UserWarning):
+    def __init__(self, label, optresult):
+        UserWarning.__init__(
+            self,
+            label + ": minimization failed: " + optresult.message)
         self.details = optresult
 
-def warn_if_minimization_failed(optresult):
+def warn_if_minimization_failed(label, optresult):
     if not optresult.success:
         warnings.warn(
-            MinimizationFailedWarning(optresult),
+            MinimizationFailedWarning(label, optresult),
             stacklevel=2)
 
 class Calibration:
@@ -128,16 +130,16 @@ class PhysicalLimitsOnly(Calibration):
 
     """
 
-    # The slopes of these lines are kilometers per millisecond, and
+    # The slopes of these lines are meters per millisecond, and
     # they're all half what you'd expect from the above discussion
     # because the /2 to convert RTT to OWTT has been baked in.
     _CURVES = {
         'empirical': {
-            'max': _Line(76.5, 0),
-            'min': _Line(55, -55*55),
+            'max': _Line(76500, 0),
+            'min': _Line(55000, -55*55000),
         },
         'physical':  {
-            'max': _Line(100, 0),
+            'max': _Line(100000, 0),
             'min': _Line(0, 0)
         }
     }
@@ -164,10 +166,11 @@ def discard_infeasible(obs):
                          .format(*obs.shape))
 
     feasible = np.logical_and(
-        obs[:,1] * 100     >= obs[:,0],
-        (obs[:,1] - 55)*55 <= obs[:,0]
+        obs[:,1] * 100000     >= obs[:,0],
+        (obs[:,1] - 55)*55000 <= obs[:,0]
     )
-    return obs[feasible, ...]
+    fobs = obs[feasible,:]
+    return fobs[np.lexsort((fobs[:,1], fobs[:,0])),:]
 
 class CBG(Calibration):
     """The CBG algorithm (from "Constraint-based Geolocation of Internet
@@ -189,20 +192,38 @@ class CBG(Calibration):
         if obs.shape[0] == 0:
             raise ValueError("not enough feasible observations")
 
-        # Eliminate redundant observations; for each distance d_i,
-        # only the minimum round-trip time min {r_i} can contribute to
-        # the solution.  Also, eliminate self-pings (d_i == 0) if any.
-        dists = np.unique(obs[:,0])
-        while len(dists) > 0 and dists[0] < 1:
-            dists = dists[1:]
+        # Also discard all observations at distance 0, CBG can't make
+        # constructive use of them.
+        obs = obs[obs[:,0] > 0, :]
 
-        if len(dists) == 0:
-            raise ValueError("not enough unique non-self observations")
+        # Split the feasible observations into bins, and take the
+        # minimum round-trip time in each bin; only this time can
+        # contribute to the solution.  This number of edges carves the
+        # planet's half-circumference into roughly 25km intervals.
+        # It's 804, not 800, for exact consistency with Spotter (see
+        # below).
+        xs = obs[:,1] # rtts
+        ys = obs[:,0] # distances
+        edges = np.linspace(ys[0], ys[-1], 804)
+        binds = np.digitize(ys, edges)
+        nbins = binds.max()-1
 
-        minrtts = np.zeros_like(dists)
-        for i, dist in enumerate(dists):
-            thisdist = obs[:,0] == dist
-            minrtts[i] = np.amin(obs[thisdist,1])
+        dists   = np.zeros(nbins)
+        minrtts = np.zeros(nbins)
+        for i in reversed(range(nbins)):
+            dists[i]   = (edges[i] + edges[i+1])/2
+            sel = binds == i+1
+            if any(sel):
+                minrtts[i] = np.amin(xs[sel])
+            elif i < nbins-1:
+                # optimize.linprog cannot cope with NaN; substitute
+                # the next higher observation, which will DTRT
+                minrtts[i] = minrtts[i+1]
+            else:
+                # there _is_ no next higher observation; substitute an
+                # artificial value (see below)
+                minrtts[i] = 237.16
+            assert minrtts[i] > 0
 
         # The goal is to find m, b that minimize \sum_i (y_i - mx_i - b)
         # while still satisfying y_i \ge mx_i + b for all i.
@@ -211,12 +232,12 @@ class CBG(Calibration):
         # The data constraints take the form 0·1 + x_i·m + 1·b \le y_i.
         #
         # We also impose physical constraints:
-        #   m >= 1/100         200,000 km/s physical speed limit
+        #   m >= 1/100000      200,000 km/s physical speed limit
         #   b >= 0             negative fixed delays don't make sense
         #   b <= min(minrtts)  otherwise the fit will not work
         #
         # Finally, we add an artificial data constraint:
-        #   x_limit = 20037.5  half of Earth's equatorial circumference
+        #   x_limit = 20037500 half of Earth's equatorial circumference
         #   y_limit = 237.16   empirical "slowest plausible" time to
         #                      traverse that distance (see above)
         #
@@ -224,32 +245,36 @@ class CBG(Calibration):
         # a satellite link as a defining point for the line.
 
         coef = np.array([np.sum(minrtts), -np.sum(dists), -len(dists)])
-        cx = np.append(dists, 20037.5)
+        cx = np.append(dists, 20037500)
         cy = np.append(minrtts, 237.16)
         constr_A = np.column_stack((
             np.zeros_like(cx), cx, np.ones_like(cx)
         ))
         constr_B = np.column_stack((cy,))
-        bounds = [(1,1), (1/100, None), (0, np.amin(cy))]
+        bounds = [(1,1), (1/100000, None), (0, np.amin(cy))]
+
+        self.cx = cx
+        self.cy = cy
+        self.coef = coef
 
         fit = optimize.linprog(coef,
                                A_ub=constr_A,
-                               b_ub=constr_B,
-                               bounds=bounds)
-
-        if not fit.success:
-            raise RuntimeError("CBG: failed to find bestline: \n" + str(fit))
-
-        # The linear program found a "bestline", mapping distance to
-        # latency.  The "max curve" is the inverse function of this
-        # bestline, mapping latency to distance.  Coefficient 0 of the
-        # fit is a dummy.
-        m = 1/fit.x[1]
-        b = -m * fit.x[2]
-        self._curve = {
-            'max': _Line(m, b),
-            'min': _Line(0, 0)
-        }
+                               b_ub=constr_B)#,
+                               #bounds=bounds)
+        warn_if_minimization_failed("CBG", fit)
+        if fit.success:
+            # The linear program found a "bestline", mapping distance to
+            # latency.  The "max curve" is the inverse function of this
+            # bestline, mapping latency to distance.  Coefficient 0 of the
+            # fit is a dummy.
+            m = 1/fit.x[1]
+            b = -m * fit.x[2]
+            self._curve = {
+                'max': _Line(m, b),
+                'min': _Line(0, 0)
+            }
+        else:
+            self.fit = fit
 
 class QuasiOctant(Calibration):
     """An algorithm derived from "Octant: A Comprehensive Framework for
@@ -304,12 +329,12 @@ class QuasiOctant(Calibration):
         upper_adjusted = np.vstack([
             upper[upper[:,0] < upper_cut[0]],
             upper_cut,
-            extrapolate(upper_cut, 1/55, 30000)
+            extrapolate(upper_cut, 1/55000, 30000000)
         ])
         lower_adjusted = np.vstack([
             lower[lower[:,0] < lower_cut[0]],
             lower_cut,
-            extrapolate(lower_cut, 1/100, 30000)
+            extrapolate(lower_cut, 1/100000, 30000000)
         ])
 
         self._curve = {
@@ -331,8 +356,9 @@ class Spotter(Calibration):
     filled in these gaps as follows.  We use cubic polynomials, fit by
     least squares, with the additional constraints that each curve
     must be increasing everywhere and must go through the minimum
-    observation.  Given a group of observed delays, we use its median
-    as the single representative delay.
+    observation.  Given a group of observed delays, we use the first
+    quartile as the representative delay; this is because the delay
+    distribution is unbounded upward.
 
     Finally, to satisfy the interface of Calibration, distance_range()
     uses 5*sigma as the outer limits of plausibility in both
@@ -343,7 +369,9 @@ class Spotter(Calibration):
         """OBS should be an N-by-2 matrix where the first column is distances
            and the second column is round-trip times."""
 
-        def windowed_moments(xs, ys, nknots=100):
+        # The default number of edges carves the planet's
+        # half-circumference into (roughly) 25km bins.
+        def windowed_moments(xs, ys, nknots=800):
             edges = np.linspace(xs[0], xs[-1], nknots + 4)
             knots = edges[2:-2]
             mu    = np.zeros_like(knots)
@@ -390,11 +418,15 @@ class Spotter(Calibration):
             ymin   = ys.min()
             ymax   = ys.max()
             yrang  = ymax - ymin
+            if yrang == 0 or math.isnan(yrang):
+                raise RuntimeError("wtf")
             ryrang = 1/yrang
 
             xmin   = xs.min()
             xmax   = xs.max()
             xrang  = xmax - xmin
+            if yrang == 0 or math.isnan(yrang):
+                raise RuntimeError("wtf #2")
             rxrang = 1/xrang
 
             xss = (xs-xmin) * rxrang
@@ -419,21 +451,21 @@ class Spotter(Calibration):
                 method = 'SLSQP',
                 # because of the constraints, the solver may need
                 # extra iterations
-                options = { 'maxiter': 1000 }
+                options = { 'maxiter': 10000 }
             )
-            warn_if_minimization_failed(result)
+            warn_if_minimization_failed("Spotter", result)
             return _ScaledCubic(*result.x, xmin, ymin, rxrang, yrang)
 
         obs = discard_infeasible(obs)
         if obs.shape[0] == 0:
             raise ValueError("not enough feasible observations")
 
-        fxw, fmw, fsw = windowed_moments(obs[:,1], obs[:,0])
-        self._mu = fit_cubic_constrained(fxw, fmw)
-        self._sigma = fit_cubic_constrained(fxw, fsw)
+        X, M, S = windowed_moments(obs[:,1], obs[:,0])
+        self._mu = fit_cubic_constrained(X, M)
+        self._sigma = fit_cubic_constrained(X, S)
 
     def distance_range(self, rtts):
-        med_rtt = np.median(rtts)
+        med_rtt = np.percentile(rtts, .25)
         mu = self._mu(med_rtt)
         s5 = self._sigma(med_rtt) * 5
         return (max(mu - s5, 0), max(mu + s5, 0))

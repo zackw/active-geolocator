@@ -304,6 +304,9 @@ class QuasiOctant(Calibration):
         if obs.shape[0] == 0:
             raise ValueError("not enough feasible observations")
 
+        # swap columns, since we want to end up with time predicting distance
+        obs[:,(0,1)] = obs[:,(1,0)]
+
         hull = spatial.ConvexHull(obs)
 
         v = obs[hull.vertices,:]
@@ -329,17 +332,17 @@ class QuasiOctant(Calibration):
         upper_adjusted = np.vstack([
             upper[upper[:,0] < upper_cut[0]],
             upper_cut,
-            extrapolate(upper_cut, 1/55000, 30000000)
+            extrapolate(upper_cut, 55000, 1000)
         ])
         lower_adjusted = np.vstack([
             lower[lower[:,0] < lower_cut[0]],
             lower_cut,
-            extrapolate(lower_cut, 1/100000, 30000000)
+            extrapolate(lower_cut, 100000, 1000)
         ])
 
         self._curve = {
-            'max': _PolyLine(lower),
-            'min': _PolyLine(upper)
+            'max': _PolyLine(upper),
+            'min': _PolyLine(lower)
         }
 
 class Spotter(Calibration):

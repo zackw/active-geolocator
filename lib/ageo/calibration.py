@@ -13,6 +13,12 @@ import warnings
 import numpy as np
 from scipy import optimize, spatial
 
+import sys
+
+# half of the equatorial circumference of the Earth, in meters
+# it is impossible for the target to be farther away than this
+DISTANCE_LIMIT = 20037508
+
 class _Line(collections.namedtuple("__Line", ("m", "b"))):
     def __call__(self, x):
         return self.m * x + self.b
@@ -38,15 +44,23 @@ def _interp_segments(segs, x):
         assert x > segs[-1,0]
         x1, y1 = segs[-2,:]
         x2, y2 = segs[-1,:]
+        case = '>'
     elif x == segs[i,0]:
         return segs[i,1]
     elif i == 0:
         assert x < segs[-1,0]
         x1, y1 = segs[0,:]
         x2, y2 = segs[1,:]
+        case = '<'
     else:
         x1, y1 = segs[i-1,:]
         x2, y2 = segs[i,:]
+        case = '_'
+
+    if x2 == x1:
+        sys.stderr.write("DIV0: case={} i={}/{} x={} x1={} x2={} y1={} y2={}\n"
+                         .format(case, i, segs.shape, x, x1, x2, y1, y2))
+        x2 += 0.000001
 
     return y1 + (y2-y1)*(x-x1)/(x2-x1)
 
@@ -76,8 +90,8 @@ class Calibration:
     def distance_range(self, rtts):
         """Given a vector of round-trip-time measurements RTTS, in
         milliseconds, compute and return a pair (min, max) which are
-        the minimum and maximum plausible distance, in kilometers over
-        the surface of the Earth, from the reference point to the target.
+        the minimum and maximum plausible distance, in meters over the
+        surface of the Earth, from the reference point to the target.
         """
 
         # Default implementation relies on the subclass constructor
@@ -135,11 +149,11 @@ class PhysicalLimitsOnly(Calibration):
     # because the /2 to convert RTT to OWTT has been baked in.
     _CURVES = {
         'empirical': {
-            'max': _Line(76500, 0),
-            'min': _Line(55000, -55*55000),
+            'max': _Line(76.5 * 1000, 0),
+            'min': _Line(55   * 1000, -55 * 55 * 1000),
         },
         'physical':  {
-            'max': _Line(100000, 0),
+            'max': _Line(100 * 1000, 0),
             'min': _Line(0, 0)
         }
     }
@@ -166,8 +180,8 @@ def discard_infeasible(obs):
                          .format(*obs.shape))
 
     feasible = np.logical_and(
-        obs[:,1] * 100000     >= obs[:,0],
-        (obs[:,1] - 55)*55000 <= obs[:,0]
+        obs[:,1] * (100 * 1000)       >= obs[:,0],
+        (obs[:,1] - 55) * (55 * 1000) <= obs[:,0]
     )
     fobs = obs[feasible,:]
     return fobs[np.lexsort((fobs[:,1], fobs[:,0])),:]
@@ -237,15 +251,15 @@ class CBG(Calibration):
         #   b <= min(minrtts)  otherwise the fit will not work
         #
         # Finally, we add an artificial data constraint:
-        #   x_limit = 20037500 half of Earth's equatorial circumference
-        #   y_limit = 237.16   empirical "slowest plausible" time to
-        #                      traverse that distance (see above)
+        #   x_limit = 20037508  half of Earth's equatorial circumference
+        #   y_limit = 237.16    empirical "slowest plausible" time to
+        #                       traverse that distance (see above)
         #
         # This last ensures that the fit will not select a data point from
         # a satellite link as a defining point for the line.
 
         coef = np.array([np.sum(minrtts), -np.sum(dists), -len(dists)])
-        cx = np.append(dists, 20037500)
+        cx = np.append(dists, DISTANCE_LIMIT)
         cy = np.append(minrtts, 237.16)
         constr_A = np.column_stack((
             np.zeros_like(cx), cx, np.ones_like(cx)
@@ -259,8 +273,8 @@ class CBG(Calibration):
 
         fit = optimize.linprog(coef,
                                A_ub=constr_A,
-                               b_ub=constr_B)#,
-                               #bounds=bounds)
+                               b_ub=constr_B,
+                               bounds=bounds)
         warn_if_minimization_failed("CBG", fit)
         if fit.success:
             # The linear program found a "bestline", mapping distance to
@@ -300,6 +314,11 @@ class QuasiOctant(Calibration):
         """OBS should be an N-by-2 matrix where the first column is distances
            and the second column is round-trip times."""
 
+        if len(obs.shape) != 2 or obs.shape[1] != 2:
+            raise ValueError(
+                "improperly shaped observations - must be (:,2), not {!r}"
+                .format(obs.shape))
+
         obs = discard_infeasible(obs)
         if obs.shape[0] == 0:
             raise ValueError("not enough feasible observations")
@@ -307,18 +326,43 @@ class QuasiOctant(Calibration):
         # swap columns, since we want to end up with time predicting distance
         obs[:,(0,1)] = obs[:,(1,0)]
 
-        hull = spatial.ConvexHull(obs)
+        # QbB: do the actual hull computation after scaling to the unit cube
+        # this reduces the odds of precision errors
+        hull = spatial.ConvexHull(obs, qhull_options="QbB")
 
         v = obs[hull.vertices,:]
+        nroll = v.shape[0]
+        while v[0,0] == v[1,0]:
+            v = np.roll(v, -1, axis=0)
+            nroll -= 1
+            if nroll == 0:
+                raise ValueError("all hull points have same x-coord? v={!r}"
+                                 .format(v))
 
-        for i in range(v.shape[0]):
-            if i > 0 and v[i-1,0] < v[i,0]:
-                break
+        if v[0,0] > v[1,0]:
+            for i in range(v.shape[0]):
+                if i > 1 and v[i-1,0] < v[i,0]:
+                    break
+        else:
+            for i in range(v.shape[0]):
+                if i > 1 and v[i-1,0] > v[i,0]:
+                    break
 
         upper = v[:i,:]
         lower = v[i-1:,:]
-        upper = upper[upper[:,0].argsort()]
-        lower = lower[lower[:,0].argsort()]
+        if upper.shape[0] <= 1 or lower.shape[0] <= 1:
+            raise ValueError("hull split inappropriately - i={!r} v={!r}"
+                             .format(i, v))
+
+        _, uind = np.unique(upper[:,0], return_index=True)
+        _, lind = np.unique(lower[:,0], return_index=True)
+        upper = upper[uind,:]
+        lower = lower[lind,:]
+
+        if upper.shape[0] <= 1 or lower.shape[0] <= 1:
+            raise ValueError("bad spline after dropping redundant x-coords - "
+                             "i={!r} v={!r} lower={!r} upper={!r}"
+                             .format(i, v, lower, upper))
 
         upper_cut = np.percentile(obs, 50, axis=0)
         upper_cut[1] = _interp_segments(upper, upper_cut[0])
@@ -332,12 +376,12 @@ class QuasiOctant(Calibration):
         upper_adjusted = np.vstack([
             upper[upper[:,0] < upper_cut[0]],
             upper_cut,
-            extrapolate(upper_cut, 55000, 1000)
+            extrapolate(upper_cut, 55*1000, 1000)
         ])
         lower_adjusted = np.vstack([
             lower[lower[:,0] < lower_cut[0]],
             lower_cut,
-            extrapolate(lower_cut, 100000, 1000)
+            extrapolate(lower_cut, 100*1000, 1000)
         ])
 
         self._curve = {

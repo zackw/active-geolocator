@@ -3,24 +3,75 @@
 
 __all__ = ('Location', 'Map', 'Observation')
 
+import bisect
+import functools
 import numpy as np
-import scipy.sparse
+import pyproj
+from scipy import sparse
+from shapely.geometry import Point, MultiPoint, box as Box
+from shapely.ops import transform as sh_transform
 import tables
 
-import pyproj
-from functools import partial
+def Disk(x, y, radius):
+    return Point(x, y).buffer(radius)
 
-_proj = {}
-def get_transforms(c1, c2):
-    global _projections
-    if c1 not in _proj:
-        _proj[c1] = pyproj.Proj(c1)
-    if c2 not in _proj:
-        _proj[c2] = pyproj.Proj(c2)
-    return (
-        partial(pyproj.transform, _proj[c1], _proj[c2]),
-        partial(pyproj.transform, _proj[c2], _proj[c1])
-    )
+# Important note: pyproj consistently takes coordinates in lon/lat
+# order and distances in meters.  lon/lat order makes sense for
+# probability matrices, because longitudes are horizontal = columns,
+# latitudes are vertical = rows, and scipy matrices are column-major
+# (blech).  Therefore, this library also consistently uses lon/lat
+# order and meters.
+
+# Coordinate transformations used by Location.centroid()
+wgs_proj  = pyproj.Proj("+proj=longlat +ellps=WGS84 +datum=WGS84 +no_defs")
+gcen_proj = pyproj.Proj("+proj=geocent +datum=WGS84 +units=m +no_defs")
+wgs_to_gcen = functools.partial(pyproj.transform, wgs_proj, gcen_proj)
+gcen_to_wgs = functools.partial(pyproj.transform, gcen_proj, wgs_proj)
+
+# Smooth over warts in pyproj.Geod.inv(), which is vectorized
+# internally, but does not support numpy-style broadcasting, and
+# returns things we don't need.  The prebound _Inv and _Bcast are
+# strictly performance hacks.
+_WGS84geod = pyproj.Geod(ellps='WGS84')
+def WGS84dist(lon1, lat1, lon2, lat2, *,
+              _Inv = _WGS84geod.inv, _Bcast = np.broadcast_arrays):
+    _, _, dist = _Inv(*_Bcast(lon1, lat1, lon2, lat2))
+    return dist
+
+def cartesian2(a, b):
+    """Cartesian product of two 1D vectors A and B."""
+    return np.tile(a, len(b)), np.repeat(b, len(a))
+
+def mask_ij(bounds, longitudes, latitudes):
+    """Given a rectangle-tuple BOUNDS (west, south, east, north; as
+       returned by shapely .bounds properties), and sorted grid index
+       vectors LONGITUDES, LATITUDES, return vectors I, J which give the
+       x- and y-indices of every grid point within the rectangle.
+       LATITUDES and LONGITUDES must be sorted.
+    """
+    try:
+        (west, south, east, north) = bounds
+    except ValueError as e:
+        raise ValueError("invalid bounds argument {!r}".format(bounds)) from e
+
+    min_i = bisect.bisect_left(longitudes, west)
+    max_i = bisect.bisect_right(longitudes, east)
+    min_j = bisect.bisect_left(latitudes, south)
+    max_j = bisect.bisect_right(latitudes, north)
+
+    I = np.array(range(min_i, max_i))
+    J = np.array(range(min_j, max_j))
+    return cartesian2(I, J)
+
+def mask_matrix(bounds, longitudes, latitudes):
+    """Construct a sparse matrix which is 1 at all latitude+longitude
+       grid points inside the rectangle BOUNDS, 0 outside.
+       LATITUDES and LONGITUDES must be sorted.
+    """
+    I, J = mask_ij(bounds, longitudes, latitudes)
+
+    return sparse.csr_matrix((np.ones_like(I), (I, J)),
+                             shape=(len(longitudes), len(latitudes)))
 
 class LocationRowOnDisk(tables.IsDescription):
     """The row format of the pytables table used to save Location objects
@@ -47,30 +98,103 @@ class Location:
       west        - Westernmost longitude ditto
       latitudes   - Vector of latitude values corresponding to grid points
       longitudes  - Vector of longitude values ditto
-      probability - Probability mass matrix
+      probability - Probability mass matrix (may be lazily computed)
+      bounds      - A shapely.Polygon bounding the nonzero portion of the
+                    probability mass matrix (may be lazily computed)
 
     You will normally not construct bare Location objects directly, only
     Map and Observation objects (these are subclasses).  However, any two
     Locations can be _intersected_ to produce a new one.
+
+    A Location is _vacuous_ if it has no nonzero entries in its
+    probability matrix.
+
     """
     def __init__(self, *,
                  resolution, fuzz, lon_spacing, lat_spacing,
                  north, south, east, west,
                  longitudes, latitudes,
-                 probability):
-        self.resolution  = resolution
-        self.fuzz        = fuzz
-        self.north       = north
-        self.south       = south
-        self.east        = east
-        self.west        = west
-        self.lon_spacing = lon_spacing
-        self.lat_spacing = lat_spacing
-        self.longitudes  = longitudes
-        self.latitudes   = latitudes
-        self.probability = probability
+                 probability=None, vacuity=None, bounds=None):
+        self.resolution   = resolution
+        self.fuzz         = fuzz
+        self.north        = north
+        self.south        = south
+        self.east         = east
+        self.west         = west
+        self.lon_spacing  = lon_spacing
+        self.lat_spacing  = lat_spacing
+        self.longitudes   = longitudes
+        self.latitudes    = latitudes
+        self._probability = probability
+        self._vacuous     = vacuity
+        self._bounds      = bounds
 
-    def intersection(self, other):
+    @property
+    def probability(self):
+        if self._probability is None:
+            self.compute_probability_matrix_now()
+        return self._probability
+
+    @property
+    def vacuous(self):
+        if self._vacuous is None:
+            self.compute_probability_matrix_now()
+        return self._vacuous
+
+    def compute_probability_matrix_now(self):
+        """Compute and set self._probability and self._vacuous.
+        """
+        M, vac = self.compute_probability_matrix_within(self.bounds)
+        self._probability = M
+        self._vacuous = vac
+
+    def compute_probability_matrix_within(self, bounds):
+        """Subclasses must override if _probability is lazily computed.
+           Returns a tuple (matrix, vacuous).
+        """
+        assert self._probability is not None
+        assert self._vacuous is not None
+
+        if self._vacuous:
+            return self._probability, True # 0 everywhere, so 0 within bounds
+
+        if bounds.empty() or bounds.bounds == ():
+            return (
+                sparse.csr_matrix((len(self.longitudes),
+                                   len(self.latitudes))),
+                True
+            )
+
+        M = (mask_matrix(bounds.bounds, self.longitudes, self.latitudes)
+             .multiply(self._probability))
+        s = M.sum()
+        if s:
+            M /= s
+            return M, False
+        else:
+            return M, True
+
+    @property
+    def bounds(self):
+        if self._bounds is None:
+            self.compute_bounding_region_now()
+        return self._bounds
+
+    def compute_bounding_region_now(self):
+        """Subclasses must implement if necessary:
+           compute and set self._bounds.
+        """
+        assert self._bounds is not None
+
+    def intersection(self, other, bounds=None):
+        """Compute the intersection of this object's probability matrix with
+           OTHER's.  If BOUNDS is specified, we don't care about
+           anything outside that area, and it will become the bounding
+           region of the result; otherwise this object and OTHER's
+           bounding regions are intersected first and the computation
+           is restricted to that region.
+        """
+
         if (self.resolution  != other.resolution or
             self.fuzz        != other.fuzz or
             self.north       != other.north or
@@ -82,11 +206,29 @@ class Location:
             raise ValueError("can't intersect locations with "
                              "inconsistent grids")
 
-        # Compute P(self AND other).
-        M = self.probability.multiply(other.probability)
-        s = M.sum()
-        if s:
-            M /= s
+        if bounds is None:
+            bounds = self.bounds.intersection(other.bounds)
+
+        # Compute P(self AND other), but only consider points inside
+        # BOUNDS.  For simplicity we actually look at the quantized
+        # bounding rectangle of BOUNDS.
+        M1, V1 = self.compute_probability_matrix_within(bounds)
+        M2, V2 = self.compute_probability_matrix_within(bounds)
+
+        if V1:
+            M = M1
+            V = True
+        elif V2:
+            M = M2
+            V = True
+        else:
+            M = M1.multiply(M2)
+            s = M.sum()
+            if s:
+                M /= s
+                V = False
+            else:
+                V = True
 
         return Location(
             resolution  = self.resolution,
@@ -99,7 +241,9 @@ class Location:
             lat_spacing = self.lat_spacing,
             longitudes  = self.longitudes,
             latitudes   = self.latitudes,
-            probability = M
+            probability = M,
+            vacuity     = V,
+            bounds      = bounds
         )
 
     def centroid(self):
@@ -109,19 +253,14 @@ class Location:
         # The centroid of a cloud of points is just the average of
         # their coordinates, but this only works correctly in
         # geocentric Cartesian space, not in lat/long space.
-        # w2g() = WGS84 to geocentric
-        # g2w() = geocentric to WGS84
-        w2g, g2w = get_transforms(
-            '+proj=longlat +ellps=WGS84 +datum=WGS84 +no_defs',
-            '+proj=geocent +datum=WGS84 +units=m +no_defs')
 
         X = 0
         Y = 0
         Z = 0
-        for i, j, v in zip(scipy.sparse.find(self.probability)):
-            lat = self.latitudes[i]
-            lon = self.longitudes[j]
-            x, y, z = w2g(lat, lon)
+        for i, j, v in zip(*sparse.find(self.probability)):
+            lon = self.longitudes[i]
+            lat = self.latitudes[j]
+            x, y, z = wgs_to_gcen(lat, lon)
             X += x*v
             Y += y*v
             Z += z*v
@@ -129,11 +268,10 @@ class Location:
         # Since the probability matrix is normalized, it is not
         # necessary to divide the weighted sums by anything to get
         # the means.  Convert back to lat/long and discard height.
-        lat, lon, _ = g2w(X, Y, Z)
+        lat, lon, _ = gcen_to_wgs(X, Y, Z)
         return lat, lon
 
     def save(self, fname):
-
         """Write out this location to an HDF file.
            For compactness, we write only the nonzero entries in a
            pytables record form, and we _don't_ write out the full
@@ -155,16 +293,15 @@ class Location:
             t.attrs.lat_count   = len(self.latitudes)
 
             cur = t.row
-            for i, lat in enumerate(self.latitudes):
-                for j, lon in enumerate(self.longitudes):
-                    pmass = self.probability[i,j]
-                    if pmass:
-                        cur['grid_x']    = j
-                        cur['grid_y']    = i
-                        cur['longitude'] = lon
-                        cur['latitude']  = lat
-                        cur['prob_mass'] = pmass
-                        cur.append()
+            for i, j, pmass in zip(*sparse.find(self.probability)):
+                lon = self.longitudes[i]
+                lat = self.latitudes[j]
+                cur['grid_x']    = i
+                cur['grid_y']    = j
+                cur['longitude'] = lon
+                cur['latitude']  = lat
+                cur['prob_mass'] = pmass
+                cur.append()
 
             t.flush()
 
@@ -174,13 +311,15 @@ class Location:
            and instantiate a Location object from it.
         """
 
-        with tables.open_file(fname, "r"):
-            t = f.location
-            M = scipy.sparse.dok_matrix((t.attrs.lat_count,
-                                         t.attrs.lon_count),
-                                        dtype=np.float32)
+        with tables.open_file(fname, "r") as f:
+            t = f.root.location
+            M = sparse.dok_matrix((t.attrs.lon_count, t.attrs.lat_count),
+                                  dtype=np.float32)
+            vacuous = True
             for row in t.iterrows():
-                M[cur['grid_y'], cur['grid_x']] = cur['prob_mass']
+                assert row['prob_mass'] > 0
+                M[row['grid_x'], row['grid_y']] = row['prob_mass']
+                vacuous = False
 
             M = M.tocsr()
 
@@ -188,6 +327,12 @@ class Location:
                                 t.attrs.lon_count)
             lats = np.linspace(t.attrs.south, t.attrs.north,
                                t.attrs.lat_count)
+
+            i, j = M.nonzero()
+            wb = longs[i.min()]
+            eb = longs[i.max()]
+            sb = lats[j.min()]
+            nb = lats[j.max()]
 
             return cls(
                 resolution  = t.attrs.resolution,
@@ -200,7 +345,9 @@ class Location:
                 lat_spacing = t.attrs.lat_spacing,
                 longitudes  = longs,
                 latitudes   = lats,
-                probability = M
+                probability = M,
+                vacuity     = vacuous,
+                bounds      = Box(wb, sb, eb, nb)
             )
 
 class Map(Location):
@@ -217,10 +364,31 @@ class Map(Location):
     def __init__(self, mapfile):
         with tables.open_file(mapfile, 'r') as f:
             M = f.root.baseline
-            baseline = scipy.sparse.csr_matrix(M)
-            # The probabilities stored in the file are not normalized.
-            baseline /= baseline.sum()
+            if M.shape[0] == len(M.attrs.longitudes):
+                baseline = sparse.csr_matrix(M)
+            elif M.shape[1] == len(M.attrs.longitudes):
+                baseline = sparse.csr_matrix(M).T
+            else:
+                raise RuntimeError(
+                    "mapfile matrix shape {!r} is inconsistent with "
+                    "lon/lat vectors ({},{})"
+                    .format(M.shape,
+                            len(M.attrs.longitudes),
+                            len(M.attrs.latitudes)))
 
+            # The probabilities stored in the file are not normalized.
+            s = baseline.sum()
+            assert s > 0
+            baseline /= s
+
+            # Note: this bound may not be tight, but it should be
+            # good enough.  It's not obvious to me how to extract
+            # a tight bounding rectangle from a scipy sparse matrix.
+            bounds      = Box(M.attrs.west, M.attrs.south,
+                              M.attrs.north, M.attrs.east)
+            if not bounds.is_valid:
+                bounds = bounds.buffer(0)
+                assert bounds.is_valid
             Location.__init__(
                 self,
                 resolution  = M.attrs.resolution,
@@ -233,44 +401,127 @@ class Map(Location):
                 lat_spacing = M.attrs.lat_spacing,
                 longitudes  = M.attrs.longitudes,
                 latitudes   = M.attrs.latitudes,
-                probability = baseline
+                probability = baseline,
+                vacuity     = False,
+                bounds      = bounds
             )
 
 class Observation(Location):
     """A single observation of the distance to a host.
 
-    An observation is defined by a map (used only for its grid spec -
-    if you want to intersect the observation with the map, do that
-    explicitly), and a _ranging function_ that computes probability as
-    a function of location."""
+       An observation is defined by a map (used only for its grid;
+       if you want to intersect the observation with the map, do that
+       explicitly), the longitude and latitude of a reference point, a
+       _ranging function_ (see ageo.ranging) that computes probability
+       as a function of distance, calibration data for the ranging
+       function (see ageo.calibration) and finally a set of observed
+       round-trip times.
 
-    def __init__(self, map, dfunc):
-        M = scipy.sparse.dok_matrix((len(map.latitudes),
-                                     len(map.longitudes)),
-                                    dtype=map.probability.dtype)
+       Both the bounds and the probability matrix are computed lazily.
 
-        for i, lat in enumerate(map.latitudes):
-            for j, lon in enumerate(map.longitudes):
-                n = dfunc(lat, lon)
-                if n:
-                    M[i,j] = n
+    """
 
-        # Ranging functions' output is not normalized, because they
-        # don't know the grid resolution.
-        M = M.tocsr()
-        M /= M.sum()
+    def __init__(self, *,
+                 basemap, ref_lon, ref_lat,
+                 range_fn, calibration, rtts):
 
         Location.__init__(
             self,
-            resolution  = map.resolution,
-            fuzz        = map.fuzz,
-            north       = map.north,
-            south       = map.south,
-            east        = map.east,
-            west        = map.west,
-            lon_spacing = map.lon_spacing,
-            lat_spacing = map.lat_spacing,
-            longitudes  = map.longitudes,
-            latitudes   = map.latitudes,
-            probability = M
+            resolution  = basemap.resolution,
+            fuzz        = basemap.fuzz,
+            north       = basemap.north,
+            south       = basemap.south,
+            east        = basemap.east,
+            west        = basemap.west,
+            lon_spacing = basemap.lon_spacing,
+            lat_spacing = basemap.lat_spacing,
+            longitudes  = basemap.longitudes,
+            latitudes   = basemap.latitudes
         )
+        self.ref_lon     = ref_lon
+        self.ref_lat     = ref_lat
+        self.calibration = calibration
+        self.rtts        = rtts
+        self.range_fn    = range_fn(calibration, rtts, basemap.fuzz)
+
+    def compute_bounding_region_now(self):
+        if self._bounds is not None: return
+
+        distance_bound = self.range_fn.distance_bound()
+
+        # To find all points on the Earth within a certain distance of
+        # a reference latitude and longitude, back-project onto the
+        # Earth from an azimuthal-equidistant map with its zero point
+        # at the reference latitude and longitude.
+        aeqd = pyproj.Proj(proj='aeqd', ellps='WGS84', datum='WGS84',
+                           lat_0=self.ref_lat, lon_0=self.ref_lon)
+
+        disk = sh_transform(
+            functools.partial(pyproj.transform, aeqd, wgs_proj),
+            Disk(0, 0, distance_bound))
+
+        # Two special cases must be manually dealt with.  First, if
+        # any side of the "circle" (really a many-sided polygon)
+        # crosses the coordinate singularity at longitude ±180, we
+        # must replace it with a diversion to either the north or
+        # south pole (whichever is closer) to ensure that it still
+        # encloses all of the area it should.
+        if not disk.boundary.is_simple:
+            boundary = np.array(disk.boundary)
+            i = 0
+            while i < boundary.shape[0] - 1:
+                if abs(boundary[i+1,0] - boundary[i,0]) > 180:
+                    pole = self.south if boundary[i,1] < 0 else self.north
+                    west = self.west if boundary[i,1] < 0 else self.east
+                    east = self.east if boundary[i,1] > 0 else self.west
+
+                    boundary = np.insert(boundary, i+1, [
+                        [west, boundary[i,1]],
+                        [west, pole],
+                        [east, pole],
+                        [east, boundary[i+1,1]]
+                    ], axis=0)
+                    i += 5
+                else:
+                    i += 1
+            disk = Polygon(boundary)
+
+        # Second, if the disk is very large, the projected disk might
+        # enclose the complement of the region that it ought to enclose.
+        # If it doesn't contain the reference point, we must subtract it
+        # from the entire map.
+        if not disk.contains(Point(self.ref_lon, self.ref_lat)):
+            disk = (Box(self.west, self.south, self.east, self.north)
+                    .difference(disk))
+
+        assert disk.is_valid
+        self._bounds = disk
+
+    def compute_probability_matrix_within(self, bounds):
+        if not bounds.empty() and bounds.bounds != ():
+
+            I, J = mask_ij(bounds.intersection(self.bounds).bounds,
+                           self.longitudes,
+                           self.latitudes)
+            pvals = self.range_fn.unnormalized_pvals(
+                WGS84dist(self.ref_lon,
+                          self.ref_lat,
+                          self.longitudes[I],
+                          self.latitudes[J]))
+
+            s = pvals.sum()
+            if s:
+                pvals /= s
+                return (
+                    sparse.csr_matrix((pvals, (I, J)),
+                                      shape=(len(self.longitudes),
+                                             len(self.latitudes))),
+                    False
+                )
+
+        return (
+            sparse.csr_matrix((len(self.longitudes),
+                               len(self.latitudes))),
+            True
+        )
+

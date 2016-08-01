@@ -11,7 +11,7 @@ import math
 import warnings
 
 import numpy as np
-from scipy import optimize, spatial
+from scipy import optimize, spatial, interpolate
 
 import sys
 
@@ -36,40 +36,16 @@ class _ScaledCubic(collections.namedtuple(
         x = (x - xm)*rxr
         return (((a*x + b)*x + c)*x + d)*yr + ym
 
-def _interp_segments(segs, x):
-    """Interpolate or extrapolate the polyline defined by SEGS at the
-       x-coordinate X.  Returns the corresponding y-coordinate."""
-    i = np.searchsorted(segs[:,0], x)
-    if i == segs.shape[0]:
-        assert x > segs[-1,0]
-        x1, y1 = segs[-2,:]
-        x2, y2 = segs[-1,:]
-        case = '>'
-    elif x == segs[i,0]:
-        return segs[i,1]
-    elif i == 0:
-        assert x < segs[-1,0]
-        x1, y1 = segs[0,:]
-        x2, y2 = segs[1,:]
-        case = '<'
-    else:
-        x1, y1 = segs[i-1,:]
-        x2, y2 = segs[i,:]
-        case = '_'
-
-    if x2 == x1:
-        sys.stderr.write("DIV0: case={} i={}/{} x={} x1={} x2={} y1={} y2={}\n"
-                         .format(case, i, segs.shape, x, x1, x2, y1, y2))
-        x2 += 0.000001
-
-    return y1 + (y2-y1)*(x-x1)/(x2-x1)
-
 class _PolyLine:
     def __init__(self, points):
         self._points = points[points[:,0].argsort()]
+        self._interpolant = interpolate.interp1d(self._points[:,0],
+                                                 self._points[:,1],
+                                                 kind='linear',
+                                                 fill_value='extrapolate')
 
     def __call__(self, x):
-        return _interp_segments(self._points, x)
+        return self._interpolant(x)
 
 class MinimizationFailedWarning(UserWarning):
     def __init__(self, label, optresult):
@@ -365,10 +341,10 @@ class QuasiOctant(Calibration):
                              .format(i, v, lower, upper))
 
         upper_cut = np.percentile(obs, 50, axis=0)
-        upper_cut[1] = _interp_segments(upper, upper_cut[0])
+        upper_cut[1] = _PolyLine(upper)(upper_cut[0])
 
         lower_cut = np.percentile(obs, 75, axis=0)
-        lower_cut[1] = _interp_segments(lower, lower_cut[0])
+        lower_cut[1] = _PolyLine(lower)(lower_cut[0])
 
         def extrapolate(point, slope, intercept):
             return np.array([intercept, point[1] + slope*(intercept-point[0])])
@@ -385,8 +361,8 @@ class QuasiOctant(Calibration):
         ])
 
         self._curve = {
-            'max': _PolyLine(upper),
-            'min': _PolyLine(lower)
+            'max': _PolyLine(upper_adjusted),
+            'min': _PolyLine(lower_adjusted)
         }
 
 class Spotter(Calibration):

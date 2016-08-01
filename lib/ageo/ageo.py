@@ -466,35 +466,37 @@ class Observation(Location):
         # must replace it with a diversion to either the north or
         # south pole (whichever is closer) to ensure that it still
         # encloses all of the area it should.
-        if not disk.boundary.is_simple:
-            boundary = np.array(disk.boundary)
-            i = 0
-            while i < boundary.shape[0] - 1:
-                if abs(boundary[i+1,0] - boundary[i,0]) > 180:
-                    pole = self.south if boundary[i,1] < 0 else self.north
-                    west = self.west if boundary[i,1] < 0 else self.east
-                    east = self.east if boundary[i,1] > 0 else self.west
+        boundary = np.array(disk.boundary)
+        i = 0
+        while i < boundary.shape[0] - 1:
+            if abs(boundary[i+1,0] - boundary[i,0]) > 180:
+                pole = self.south if boundary[i,1] < 0 else self.north
+                west = self.west if boundary[i,1] < 0 else self.east
+                east = self.east if boundary[i,1] > 0 else self.west
 
-                    boundary = np.insert(boundary, i+1, [
-                        [west, boundary[i,1]],
-                        [west, pole],
-                        [east, pole],
-                        [east, boundary[i+1,1]]
-                    ], axis=0)
-                    i += 5
-                else:
-                    i += 1
-            disk = Polygon(boundary)
+                boundary = np.insert(boundary, i+1, [
+                    [west, boundary[i,1]],
+                    [west, pole],
+                    [east, pole],
+                    [east, boundary[i+1,1]]
+                ], axis=0)
+                i += 5
+            else:
+                i += 1
+        disk = Polygon(boundary)
 
         # Second, if the disk is very large, the projected disk might
         # enclose the complement of the region that it ought to enclose.
         # If it doesn't contain the reference point, we must subtract it
         # from the entire map.
-        if not disk.contains(Point(self.ref_lon, self.ref_lat)):
+        origin = Point(self.ref_lon, self.ref_lat)
+        if not disk.contains(origin):
             disk = (Box(self.west, self.south, self.east, self.north)
                     .difference(disk))
 
         assert disk.is_valid
+        assert disk.boundary.is_simple
+        assert disk.contains(origin)
         self._bounds = disk
 
     def compute_probability_matrix_within(self, bounds):

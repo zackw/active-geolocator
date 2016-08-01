@@ -13,11 +13,12 @@ from shapely.ops import transform as sh_transform
 from functools import partial
 from sys import stderr
 
+from .calibration import PhysicalLimitsOnly
+
 WGS84_globe = pyproj.Proj(proj='latlong', ellps='WGS84')
 
 def Disk(x, y, radius):
     return Point(x, y).buffer(radius)
-
 
 # Convenience wrappers for forward and inverse geodetic computations
 # on the WGS84 ellipsoid, smoothing over some warts in pyproj.Geod.
@@ -40,6 +41,10 @@ def WGS84loc(lat, lon, az, dist, *,
 # it is impossible for the target to be farther away than this
 DISTANCE_LIMIT = 20037508
 
+# PhysicalLimitsOnly instances are data-independent, so we only need two
+PHYSICAL_BOUNDS  = PhysicalLimitsOnly('physical')
+EMPIRICAL_BOUNDS = PhysicalLimitsOnly('empirical')
+
 class RangingFunction:
     """Abstract base class."""
 
@@ -55,41 +60,40 @@ class RangingFunction:
         raise NotImplementedError
 
 class MinMax(RangingFunction):
-    """A min-max ranging function is a flat nonzero value for any distance
-       in between the minimum and maximum distances considered
-       feasible by the calibration, and 0 otherwise.
+    """An _ideal_ min-max ranging function is a flat nonzero value
+       for any distance in between the minimum and maximum distances
+       considered feasible by the calibration, and 0 otherwise.
+
+       Because all of the empirical calibration algorithms are liable
+       to spit out an observation from time to time that's
+       inconsistent with the global truth, we do not drop the probability
+       straight to zero immediately at the limits suggested by the
+       calibration.  Instead, we make it fall off linearly to the bounds
+       given by PHYSICAL_BOUNDS, with a knee at EMPIRICAL_BOUNDS.
     """
 
     def __init__(self, *args, **kwargs):
         RangingFunction.__init__(self, *args, **kwargs)
-        min_dist, max_dist = \
+        min_cal, max_cal = \
             self.calibration.distance_range(self.rtts)
-        if min_dist < 0 or max_dist < 0 or max_dist < min_dist:
-            stderr.write("Inconsistent distance range [{}, {}], clamping\n"
-                         .format(min_dist, max_dist))
-            min_dist = max(min_dist, 0)
-            max_dist = max(max_dist, min_dist)
+        min_emp, max_emp = EMPIRICAL_BOUNDS.distance_range(self.rtts)
+        min_phy, max_phy = PHYSICAL_BOUNDS.distance_range(self.rtts)
+        self.bounds = [
+            min(DISTANCE_LIMIT, max(0, val))
+            for val in
+            (min_cal, max_cal, min_emp, max_emp, min_phy, max_phy)]
+        self.bounds.sort()
 
-        self.min_dist = min(min_dist, DISTANCE_LIMIT)
-        self.min_fuzz = max(0, self.min_dist - self.fuzz)
-        self.max_dist = min(max_dist, DISTANCE_LIMIT)
-        self.max_fuzz = min(self.max_dist + self.fuzz, DISTANCE_LIMIT)
+        self.interpolant = interpolate.interp1d(
+            self.bounds,
+            [0, .75, 1, 1, .75, 0],
+            kind = 'linear',
+            fill_value = 0,
+            bounds_error = False
+        )
 
     def distance_bound(self):
-        return self.max_fuzz
+        return self.bounds[-1]
 
     def unnormalized_pvals(self, dist):
-        # The unnormalized probability is 1 at each point within
-        # [min_dist, max_dist], and falls off linearly with the
-        # distance beyond, to 0 outside ]min_fuzz, max_fuzz[.
-
-        rv = np.zeros_like(dist)
-        rv[self.min_dist <= dist <= self.max_dist] = 1
-
-        fb = self.min_fuzz < dist < self.min_dist
-        fa = self.max_dist < dist < self.max_fuzz
-
-        rv[fb] = (self.min_dist - dist[fb]) / self.fuzz
-        rv[fa] = (dist[fa] - self.max_dist) / self.fuzz
-
-        return rv
+        return self.interpolant(dist)

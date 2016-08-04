@@ -8,10 +8,11 @@ provides several different algorithms for this calculation.
 
 import numpy as np
 import pyproj
-from shapely.geometry import Point, MultiPoint
+from shapely.geometry import Point
 from shapely.ops import transform as sh_transform
 from functools import partial
 from sys import stderr
+from scipy import interpolate
 
 from .calibration import PhysicalLimitsOnly
 

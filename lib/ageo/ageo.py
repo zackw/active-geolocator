@@ -8,9 +8,11 @@ import functools
 import numpy as np
 import pyproj
 from scipy import sparse
-from shapely.geometry import Point, MultiPoint, box as Box
+from shapely.geometry import Point, Polygon, box as Box
 from shapely.ops import transform as sh_transform
 import tables
+import math
+import sys
 
 def Disk(x, y, radius):
     return Point(x, y).buffer(radius)
@@ -99,7 +101,7 @@ class Location:
       latitudes   - Vector of latitude values corresponding to grid points
       longitudes  - Vector of longitude values ditto
       probability - Probability mass matrix (may be lazily computed)
-      bounds      - A shapely.Polygon bounding the nonzero portion of the
+      bounds      - Bounding region of the nonzero portion of the
                     probability mass matrix (may be lazily computed)
 
     You will normally not construct bare Location objects directly, only
@@ -128,6 +130,7 @@ class Location:
         self._probability = probability
         self._vacuous     = vacuity
         self._bounds      = bounds
+        self._centroid    = None
 
     @property
     def probability(self):
@@ -140,6 +143,12 @@ class Location:
         if self._vacuous is None:
             self.compute_probability_matrix_now()
         return self._vacuous
+
+    @property
+    def centroid(self):
+        if self._centroid is None:
+            self.compute_centroid_now()
+        return self._centroid
 
     def compute_probability_matrix_now(self):
         """Compute and set self._probability and self._vacuous.
@@ -158,7 +167,7 @@ class Location:
         if self._vacuous:
             return self._probability, True # 0 everywhere, so 0 within bounds
 
-        if bounds.empty() or bounds.bounds == ():
+        if bounds.is_empty or bounds.bounds == ():
             return (
                 sparse.csr_matrix((len(self.longitudes),
                                    len(self.latitudes))),
@@ -213,7 +222,7 @@ class Location:
         # BOUNDS.  For simplicity we actually look at the quantized
         # bounding rectangle of BOUNDS.
         M1, V1 = self.compute_probability_matrix_within(bounds)
-        M2, V2 = self.compute_probability_matrix_within(bounds)
+        M2, V2 = other.compute_probability_matrix_within(bounds)
 
         if V1:
             M = M1
@@ -246,8 +255,8 @@ class Location:
             bounds      = bounds
         )
 
-    def centroid(self):
-        """Returns the weighted centroid of the probability mass function.
+    def compute_centroid_now(self):
+        """Compute the weighted centroid of the probability mass function.
         """
 
         # The centroid of a cloud of points is just the average of
@@ -260,16 +269,26 @@ class Location:
         for i, j, v in zip(*sparse.find(self.probability)):
             lon = self.longitudes[i]
             lat = self.latitudes[j]
-            x, y, z = wgs_to_gcen(lat, lon)
-            X += x*v
-            Y += y*v
-            Z += z*v
+            # PROJ.4 requires a dummy third argument when converting
+            # to geocentric (this appears to be interpreted as meters
+            # above/below the datum).
+            x, y, z = wgs_to_gcen(lon, lat, 0)
+            if math.isinf(x) or math.isinf(y) or math.isinf(z):
+                sys.stderr.write("wgs_to_gcen({}, {}, 0) = {}, {}, {}\n"
+                                 .format(lon, lat, x, y, z))
+            else:
+                X += x*v
+                Y += y*v
+                Z += z*v
 
         # Since the probability matrix is normalized, it is not
         # necessary to divide the weighted sums by anything to get
         # the means.  Convert back to lat/long and discard height.
-        lat, lon, _ = gcen_to_wgs(X, Y, Z)
-        return lat, lon
+        lon, lat, _ = gcen_to_wgs(X, Y, Z)
+        if math.isinf(lat) or math.isinf(lon):
+            raise ValueError("bogus centroid {}/{} - X={} Y={} Z={}"
+                             .format(lat, lon, X, Y, Z))
+        self._centroid = (lon, lat)
 
     def save(self, fname):
         """Write out this location to an HDF file.
@@ -385,7 +404,7 @@ class Map(Location):
             # good enough.  It's not obvious to me how to extract
             # a tight bounding rectangle from a scipy sparse matrix.
             bounds      = Box(M.attrs.west, M.attrs.south,
-                              M.attrs.north, M.attrs.east)
+                              M.attrs.east, M.attrs.north)
             if not bounds.is_valid:
                 bounds = bounds.buffer(0)
                 assert bounds.is_valid
@@ -449,6 +468,16 @@ class Observation(Location):
 
         distance_bound = self.range_fn.distance_bound()
 
+        # If the distance bound is too close to half the circumference
+        # of the Earth, the projection operation below will produce an
+        # invalid polygon.  We don't get much use out of a bounding
+        # region that includes the whole planet but for a tiny disk
+        # (which will probably be somewhere in the ocean anyway) so
+        # just give up and say that the bound is the entire planet.
+        if distance_bound > 19975000:
+            self._bounds = Box(self.west, self.south, self.east, self.north)
+            return
+
         # To find all points on the Earth within a certain distance of
         # a reference latitude and longitude, back-project onto the
         # Earth from an azimuthal-equidistant map with its zero point
@@ -456,55 +485,63 @@ class Observation(Location):
         aeqd = pyproj.Proj(proj='aeqd', ellps='WGS84', datum='WGS84',
                            lat_0=self.ref_lat, lon_0=self.ref_lon)
 
-        disk = sh_transform(
-            functools.partial(pyproj.transform, aeqd, wgs_proj),
-            Disk(0, 0, distance_bound))
+        try:
+            disk = sh_transform(
+                functools.partial(pyproj.transform, aeqd, wgs_proj),
+                Disk(0, 0, distance_bound))
 
-        # Two special cases must be manually dealt with.  First, if
-        # any side of the "circle" (really a many-sided polygon)
-        # crosses the coordinate singularity at longitude ±180, we
-        # must replace it with a diversion to either the north or
-        # south pole (whichever is closer) to ensure that it still
-        # encloses all of the area it should.
-        boundary = np.array(disk.boundary)
-        i = 0
-        while i < boundary.shape[0] - 1:
-            if abs(boundary[i+1,0] - boundary[i,0]) > 180:
-                pole = self.south if boundary[i,1] < 0 else self.north
-                west = self.west if boundary[i,1] < 0 else self.east
-                east = self.east if boundary[i,1] > 0 else self.west
+            # Two special cases must be manually dealt with.  First, if
+            # any side of the "circle" (really a many-sided polygon)
+            # crosses the coordinate singularity at longitude ±180, we
+            # must replace it with a diversion to either the north or
+            # south pole (whichever is closer) to ensure that it still
+            # encloses all of the area it should.
+            boundary = np.array(disk.boundary)
+            i = 0
+            while i < boundary.shape[0] - 1:
+                if abs(boundary[i+1,0] - boundary[i,0]) > 180:
+                    pole = self.south if boundary[i,1] < 0 else self.north
+                    west = self.west if boundary[i,0] < 0 else self.east
+                    east = self.east if boundary[i,0] < 0 else self.west
 
-                boundary = np.insert(boundary, i+1, [
-                    [west, boundary[i,1]],
-                    [west, pole],
-                    [east, pole],
-                    [east, boundary[i+1,1]]
-                ], axis=0)
-                i += 5
-            else:
-                i += 1
-        disk = Polygon(boundary)
+                    boundary = np.insert(boundary, i+1, [
+                        [west, boundary[i,1]],
+                        [west, pole],
+                        [east, pole],
+                        [east, boundary[i+1,1]]
+                    ], axis=0)
+                    i += 5
+                else:
+                    i += 1
+            # If there were two edges that crossed the singularity and they
+            # were both on the same side of the equator, the excursions will
+            # coincide and shapely will be unhappy.  buffer(0) corrects this.
+            disk = Polygon(boundary).buffer(0)
 
-        # Second, if the disk is very large, the projected disk might
-        # enclose the complement of the region that it ought to enclose.
-        # If it doesn't contain the reference point, we must subtract it
-        # from the entire map.
-        origin = Point(self.ref_lon, self.ref_lat)
-        if not disk.contains(origin):
-            disk = (Box(self.west, self.south, self.east, self.north)
-                    .difference(disk))
+            # Second, if the disk is very large, the projected disk might
+            # enclose the complement of the region that it ought to enclose.
+            # If it doesn't contain the reference point, we must subtract it
+            # from the entire map.
+            origin = Point(self.ref_lon, self.ref_lat)
+            if not disk.contains(origin):
+                disk = (Box(self.west, self.south, self.east, self.north)
+                        .difference(disk))
 
-        assert disk.is_valid
-        assert disk.boundary.is_simple
-        assert disk.contains(origin)
-        self._bounds = disk
+            assert disk.is_valid
+            assert disk.contains(origin)
+            self._bounds = disk
+        except Exception as e:
+            setattr(e, 'offending_disk', disk)
+            setattr(e, 'offending_obs', self)
+            raise
 
     def compute_probability_matrix_within(self, bounds):
-        if not bounds.empty() and bounds.bounds != ():
+        if not bounds.is_empty and bounds.bounds != ():
 
             I, J = mask_ij(bounds.intersection(self.bounds).bounds,
                            self.longitudes,
                            self.latitudes)
+
             pvals = self.range_fn.unnormalized_pvals(
                 WGS84dist(self.ref_lon,
                           self.ref_lat,

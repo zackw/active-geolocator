@@ -409,6 +409,11 @@ class Spotter(Calibration):
                     mu[i] = math.nan
                     sigma[i] = math.nan
 
+            observed = np.isfinite(mu)
+            knots = knots[observed]
+            mu = mu[observed]
+            sigma = sigma[observed]
+            assert all(np.isfinite(sigma))
             return (knots, mu, sigma)
 
         def fit_cubic_constrained(xs, ys):
@@ -442,13 +447,19 @@ class Spotter(Calibration):
             ymax   = ys.max()
             yrang  = ymax - ymin
             if yrang == 0 or math.isnan(yrang):
+                import sys
+                import pprint
+                pprint.pprint(ys, stream=sys.stderr)
                 raise RuntimeError("wtf")
             ryrang = 1/yrang
 
             xmin   = xs.min()
             xmax   = xs.max()
             xrang  = xmax - xmin
-            if yrang == 0 or math.isnan(yrang):
+            if xrang == 0 or math.isnan(xrang):
+                import sys
+                import pprint
+                pprint.pprint(xs, stream=sys.stderr)
                 raise RuntimeError("wtf #2")
             rxrang = 1/xrang
 

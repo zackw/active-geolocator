@@ -116,7 +116,9 @@ class Location:
                  resolution, fuzz, lon_spacing, lat_spacing,
                  north, south, east, west,
                  longitudes, latitudes,
-                 probability=None, vacuity=None, bounds=None):
+                 probability=None, vacuity=None, bounds=None,
+                 centroid=None, covariance=None
+    ):
         self.resolution   = resolution
         self.fuzz         = fuzz
         self.north        = north
@@ -130,7 +132,8 @@ class Location:
         self._probability = probability
         self._vacuous     = vacuity
         self._bounds      = bounds
-        self._centroid    = None
+        self._centroid    = centroid
+        self._covariance  = covariance
 
     @property
     def probability(self):
@@ -149,6 +152,12 @@ class Location:
         if self._centroid is None:
             self.compute_centroid_now()
         return self._centroid
+
+    @property
+    def covariance(self):
+        if self._covariance is None:
+            self.compute_centroid_now()
+        return self._covariance
 
     def compute_probability_matrix_now(self):
         """Compute and set self._probability and self._vacuous.
@@ -256,16 +265,18 @@ class Location:
         )
 
     def compute_centroid_now(self):
-        """Compute the weighted centroid of the probability mass function.
+        """Compute the weighted centroid and covariance matrix
+           of the probability mass function.
         """
+        if self._centroid is not None: return
 
         # The centroid of a cloud of points is just the average of
         # their coordinates, but this only works correctly in
         # geocentric Cartesian space, not in lat/long space.
 
-        X = 0
-        Y = 0
-        Z = 0
+        X = []
+        Y = []
+        Z = []
         for i, j, v in zip(*sparse.find(self.probability)):
             lon = self.longitudes[i]
             lat = self.latitudes[j]
@@ -277,18 +288,24 @@ class Location:
                 sys.stderr.write("wgs_to_gcen({}, {}, 0) = {}, {}, {}\n"
                                  .format(lon, lat, x, y, z))
             else:
-                X += x*v
-                Y += y*v
-                Z += z*v
+                X.append(x*v)
+                Y.append(y*v)
+                Z.append(z*v)
+
+        # We leave the covariance matrix in geocentric terms, since
+        # I'm not sure how to transform it back to lat/long space, or
+        # if that even makes sense.
+        M = np.vstack((X, Y, Z))
+        self._covariance = np.cov(M)
 
         # Since the probability matrix is normalized, it is not
         # necessary to divide the weighted sums by anything to get
-        # the means.  Convert back to lat/long and discard height.
-        lon, lat, _ = gcen_to_wgs(X, Y, Z)
+        # the means.
+        lon, lat, _ = gcen_to_wgs(*np.sum(M, 1))
         if math.isinf(lat) or math.isinf(lon):
             raise ValueError("bogus centroid {}/{} - X={} Y={} Z={}"
                              .format(lat, lon, X, Y, Z))
-        self._centroid = (lon, lat)
+        self._centroid = np.array((lon, lat))
 
     def save(self, fname):
         """Write out this location to an HDF file.
@@ -297,6 +314,8 @@ class Location:
            longitude/latitude grid (it can be reconstructed from
            the other metadata).
         """
+        self.compute_centroid_now()
+
         with tables.open_file(fname, mode="w", title="location") as f:
             t = f.create_table(f.root, "location",
                                LocationRowOnDisk, "location")
@@ -310,6 +329,8 @@ class Location:
             t.attrs.lat_spacing = self.lat_spacing
             t.attrs.lon_count   = len(self.longitudes)
             t.attrs.lat_count   = len(self.latitudes)
+            t.attrs.centroid    = self.centroid
+            t.attrs.covariance  = self.covariance
 
             cur = t.row
             for i, j, pmass in zip(*sparse.find(self.probability)):
@@ -366,7 +387,9 @@ class Location:
                 latitudes   = lats,
                 probability = M,
                 vacuity     = vacuous,
-                bounds      = Box(wb, sb, eb, nb)
+                bounds      = Box(wb, sb, eb, nb),
+                centroid    = t.attrs.centroid,
+                covariance  = t.attrs.covariance
             )
 
 class Map(Location):

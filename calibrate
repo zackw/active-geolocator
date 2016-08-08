@@ -1,0 +1,299 @@
+#! /usr/bin/python3
+
+# usage: map measurement-dir output-dir
+
+import os
+import sys
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), 'lib')))
+
+import collections
+import csv
+import datetime
+import itertools
+import glob
+import gzip
+import multiprocessing
+import pickle
+import pickletools
+import shlex
+import time
+
+import numpy as np
+import ageo
+
+from pyproj import Geod
+
+_time_0 = time.monotonic()
+
+def progress(message, *args):
+    global _time_0
+    sys.stderr.write(
+        ("{}: " + message + "\n").format(
+            datetime.timedelta(seconds = time.monotonic() - _time_0),
+            *args))
+
+def warning(message, *args):
+    sys.stderr.write(
+        ("\t*** " + message + "\n").format(*args))
+
+_WGS84dist = Geod(ellps='WGS84').inv
+def WGS84dist(lon1, lat1, lon2, lat2):
+    _, _, dist = _WGS84dist(lon1, lat1, lon2, lat2)
+    return dist
+def WGS84daz(lon1, lat1, lon2, lat2):
+    az, _, dist = _WGS84dist(lon1, lat1, lon2, lat2)
+    return dist, az
+
+TruePosition = collections.namedtuple("TruePosition",
+                                      ("lat", "lon", "ipv4", "asn", "cc"))
+
+
+def load_true_positions(fname, positions, cache_ts):
+    with open(fname) as fp:
+        if os.fstat(fp.fileno()).st_mtime < cache_ts:
+            return False
+
+        positions.clear()
+        rd = csv.DictReader(fp)
+        for row in rd:
+            pos = TruePosition(
+                float(row['latitude']), float(row['longitude']),
+                row['address_v4'], row['asn_v4'], row['country_code'].lower())
+
+            # sanity check
+            if not (-90 <= pos.lat < 90) or not (-180 < pos.lon < 180):
+                warning("{} ({}): position off globe: {}, {}",
+                        row['id'], pos.ipv4, pos.lat, pos.lon)
+            elif (-1 < pos.lat < 1) and (-1 < pos.lon < 1):
+                warning("{} ({}): null island: {}, {}",
+                        row['id'], pos.ipv4, pos.lat, pos.lon)
+            else:
+                positions[int(row['id'])] = pos
+
+        return True
+
+def compute_true_distances(positions):
+    distances = {}
+    for did, dpos in positions.items():
+        distances[did] = {}
+        for sid, spos in positions.items():
+            distances[did][sid] = WGS84dist(dpos.lon, dpos.lat,
+                                            spos.lon, spos.lat)
+    return distances
+
+def load_measurements(fname, measurements, cache_ts, positions, already):
+    with open(fname) as fp:
+        if os.fstat(fp.fileno()).st_mtime < cache_ts:
+            return False
+        progress("loading {!r}", shlex.quote(fname))
+
+        rd = csv.DictReader(fp)
+        for row in rd:
+            d_id = int(row['d.id'])
+            s_id = int(row['s.id'])
+            rtt = float(row['rtt'])
+
+            if not (0 <= rtt < 4000):
+                warning("out of range: {} -> {}: {}", s_id, d_id, rtt)
+                continue
+            if d_id not in positions:
+                if d_id not in already:
+                    warning("no position for dest {}", d_id)
+                    already.add(d_id)
+                continue
+            if s_id not in positions:
+                if s_id not in already:
+                    warning("no position for src {}", s_id)
+                    already.add(s_id)
+                continue
+
+            if d_id not in measurements:
+                measurements[d_id] = {}
+            if s_id not in measurements[d_id]:
+                measurements[d_id][s_id] = []
+            measurements[d_id][s_id].append(float(row['rtt']))
+
+        return True
+
+def load_raw_data(mdir):
+    positions_f = mdir + '/ripe-atlas-anchors.csv'
+    pingtimes_g = mdir + '/ripe-atlas-anchor-pingtimes-*.csv'
+    cache_f     = mdir + '/ripe-atlas-cache.pickle.gz'
+
+    try:
+        progress("Loading measurement cache...")
+        with gzip.open(cache_f, "rb") as mcache:
+            positions, distances, measurements = pickle.load(mcache)
+            cache_ts = os.fstat(mcache.fileno()).st_mtime
+            cache_dirty = False
+
+    except (OSError, EOFError, pickle.UnpicklingError) as e:
+        warning("Failed to load measurement cache: {}", e)
+        positions = {}
+        distances = None
+        measurements = {}
+        cache_ts = 0
+        cache_dirty = True
+
+    progress("Loading positions...")
+    positions_changed = load_true_positions(positions_f, positions, cache_ts)
+
+    if positions_changed or distances is None:
+        cache_dirty = True
+        distances = compute_true_distances(positions)
+
+    progress("Loading measurements...")
+    already = set()
+    for f in glob.glob(pingtimes_g):
+        cache_dirty |= load_measurements(f, measurements, cache_ts,
+                                         positions, already)
+
+    if cache_dirty:
+        progress("Updating measurement cache...")
+        with gzip.open(cache_f, "wb") as mcache:
+            mcache.write(
+                pickletools.optimize(
+                    pickle.dumps(
+                        (positions, distances, measurements),
+                        pickle.HIGHEST_PROTOCOL)))
+
+    return positions, distances, measurements, cache_ts
+
+def make_calibration_obs(did, obs):
+    cbg = ageo.calibration.CBG(obs)
+    progress("{}: CBG", did)
+    octant = ageo.calibration.QuasiOctant(obs)
+    progress("{}: Octant", did)
+    spotter = ageo.calibration.Spotter(obs)
+    progress("{}: Spotter", did)
+    return did, obs, cbg, octant, spotter
+
+def make_calibration_1(did, srcs, distances):
+    progress("Calibrating {}...", did)
+    obs = np.ndarray(shape=(0,2))
+    for sid, rts in srcs.items():
+        if sid == did: continue
+        tdist = distances[did][sid]
+        rts = np.array(rts)
+        o1 = np.column_stack((np.full_like(rts, tdist), rts))
+        obs = np.vstack((obs, o1))
+    return make_calibration_obs(did, obs)
+
+def call_make_calibration_1(args):
+    return make_calibration_1(*args)
+
+def make_calibrations(measurements, distances, pool):
+    cbg = {}
+    octant = {}
+    spotter = {}
+    obs_all = np.ndarray(shape=(0,2))
+
+    progress("Calibrating...")
+    for did, o1, cbg1, oct1, spo1 in pool.imap_unordered(
+            call_make_calibration_1,
+            ((d, s, distances) for d, s in measurements.items()),
+            chunksize=1):
+        cbg[did] = cbg1
+        octant[did] = oct1
+        spotter[did] = spo1
+        obs_all = np.vstack((obs_all, o1))
+
+    progress("Calibrating combined...")
+    _, _, cbgA, octA, spoA = make_calibration_obs("combined", obs_all)
+    cbg[0] = cbgA
+    octant[0] = octA
+    spotter[0] = spoA
+
+    return cbg, octant, spotter
+
+def cached_make_calibrations(measurements, distances, pool, mdir, mcache_ts):
+    cal_cache_f = mdir + "/ripe-atlas-calibration.pickle"
+    try:
+        progress("Loading calibration cache...")
+        with gzip.open(cal_cache_f, "rb") as calcache:
+            cache_ts = os.fstat(calcache.fileno()).st_mtime
+            if cache_ts > mcache_ts:
+                calibrations = pickle.load(calcache)
+                return calibrations
+            else:
+                warning("Calibration cache out of date, regenerating.")
+
+    except (OSError, EOFError, pickle.UnpicklingError) as e:
+        warning("Failed to load calibration cache: {}", e)
+
+    calibrations = make_calibrations(measurements, distances, pool)
+
+    with gzip.open(cal_cache_f, "wb") as calcache:
+        calcache.write(
+            pickletools.optimize(
+                pickle.dumps(calibrations, pickle.HIGHEST_PROTOCOL)))
+
+    return calibrations
+
+def crunch_obs_1(odir, positions, distances, basemap,
+                 did, srcs,
+                 tag, cals, ranging, use_all):
+    bnd = basemap.bounds
+    obsv = []
+    for sid, rtts in srcs.items():
+        if sid == did or sid not in cals or sid not in positions:
+            continue
+        spos = positions[sid]
+        obs = ageo.Observation(
+            basemap=basemap,
+            ref_lat=spos.lat,
+            ref_lon=spos.lon,
+            range_fn=ranging,
+            calibration=cals[0] if use_all else cals[sid],
+            rtts=rtts)
+        obsv.append(obs)
+        bnd = bnd.intersection(obs.bounds)
+        assert not bnd.is_empty
+
+    loc = obsv[0]
+    for obs in obsv[1:]:
+        loc = loc.intersection(obs, bnd)
+
+    loc.save(os.path.join(odir, tag + "-" + str(did) + ".h5"))
+    return tag, did
+
+def call_crunch_obs_1(args):
+    return crunch_obs_1(*args)
+
+def main():
+    basemap = ageo.Map(sys.argv[1])
+    positions, distances, measurements, cache_ts = \
+        load_raw_data(sys.argv[2])
+
+    with multiprocessing.Pool() as pool:
+        cal_cbg, cal_oct, cal_spo = cached_make_calibrations(
+            measurements, distances, pool, sys.argv[2], cache_ts)
+
+        minmax = ageo.ranging.MinMax
+        gaussn = ageo.ranging.Gaussian
+        crunch_modes = [
+            ("cbg-m-1", cal_cbg, minmax, False),
+            ("cbg-m-a", cal_cbg, minmax, True),
+            ("oct-m-1", cal_oct, minmax, False),
+            ("oct-m-a", cal_oct, minmax, True),
+            ("spo-m-1", cal_spo, minmax, False),
+            ("spo-m-a", cal_spo, minmax, True),
+            ("spo-g-1", cal_spo, gaussn, False),
+            ("spo-g-a", cal_spo, gaussn, True)
+        ]
+
+        progress("Crunching observations...")
+        for tag, did in pool.imap_unordered(
+                call_crunch_obs_1,
+                ((sys.argv[3], positions, distances, basemap,
+                  did, srcs,
+                  tag, cals, ranging, use_all)
+                 for did, srcs in measurements.items()
+                 for tag, cals, ranging, use_all in crunch_modes),
+                chunksize=1):
+
+            # all the actual work has been done in crunch_obs_1, we
+            # just issue status reports here
+            progress("{}: {}", did, tag)
+
+main()

@@ -1,0 +1,50 @@
+#! /usr/bin/python3
+
+import os
+import sys
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), 'lib')))
+
+import collections
+import csv
+import fileinput
+
+import numpy as np
+from titlecase import titlecase
+
+def inner_main(rd, wr):
+    header = next(rd)
+    assert header[:4] == ["algorithm", "cal_set", "id", "true_rgn"]
+    regions = [titlecase(s.replace('_', ' ')) for s in header[4:]]
+
+    matrices = collections.defaultdict(
+        lambda: np.zeros((len(regions), len(regions))))
+
+    for row in rd:
+        if row[0] == "algorithm":
+            assert row == header
+            continue
+
+        v = np.array([float(x) for x in row[4:]])
+        if not all(np.isfinite(v)):
+            sys.stderr.write("skipping: " + repr(row) + "\n")
+            continue
+        mtx = matrices[row[0], row[1]]
+        mtx[int(row[3]),:] += v
+
+    wr.writerow(("algorithm", "cal_set", "rgn1", "rgn2", "confusion"))
+    for (alg, cal_set), mtx in matrices.items():
+        # normalize rows
+        rs = mtx.sum(axis=1)
+        rs[rs == 0] = 1
+        mtx /= rs[:,np.newaxis]
+        for i, a in enumerate(regions):
+            for j, b in enumerate(regions):
+                wr.writerow((alg, cal_set, a, b, mtx[i,j]))
+
+def main():
+    with fileinput.input() as inf, sys.stdout as ouf:
+        rd = csv.reader(inf)
+        wr = csv.writer(ouf, dialect='unix', quoting=csv.QUOTE_MINIMAL)
+        inner_main(rd, wr)
+
+main()

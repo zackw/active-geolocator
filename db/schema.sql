@@ -50,6 +50,7 @@ CREATE TABLE geolocation.measurements (
        "rtt"    REAL    NOT NULL CHECK ("rtt" >= 0),
        "status" INTEGER NOT NULL
 );
+CREATE INDEX measurements_batch ON geolocation.measurements(batch);
 CREATE INDEX measurements_src ON geolocation.measurements(src);
 CREATE INDEX measurements_dst ON geolocation.measurements(dst);
 

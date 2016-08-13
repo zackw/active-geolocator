@@ -19,6 +19,9 @@ measurement-client/autom4te.cache/
 *.csv
 measurement-client/probe-result-*.json
 
+# The files that go in this directory are too big to check in
+maps/regions/
+
 # Editor junk
 .#*
 \#*#

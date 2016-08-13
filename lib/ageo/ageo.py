@@ -268,6 +268,21 @@ class Location:
             return 0
         return min_distance
 
+    def contains_point(self, lon, lat):
+        """True if a grid cell with a nonzero probability contains
+           or adjoins (lon, lat)."""
+        i = bisect.bisect_left(self.longitudes, lon)
+        j = bisect.bisect_left(self.latitudes, lat)
+        return (self.probability[i-1, j-1] > 0 or
+                self.probability[i,   j-1] > 0 or
+                self.probability[i+1, j-1] > 0 or
+                self.probability[i-1, j  ] > 0 or
+                self.probability[i,   j  ] > 0 or
+                self.probability[i+1, j  ] > 0 or
+                self.probability[i-1, j+1] > 0 or
+                self.probability[i,   j+1] > 0 or
+                self.probability[i+1, j+1] > 0)
+
     def compute_probability_matrix_now(self):
         """Compute and set self._probability and self._vacuous.
         """

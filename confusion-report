@@ -1,0 +1,132 @@
+#! /usr/bin/python3
+
+# usage: confusion-report true-positions.csv regions/ predictions/ > report.csv
+
+import os
+import sys
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), 'lib')))
+
+import collections
+import csv
+import datetime
+import glob
+import multiprocessing
+import time
+
+import ageo
+import numpy as np
+
+_time_0 = time.monotonic()
+def progress(message, *args):
+    global _time_0
+    sys.stderr.write(
+        ("{}: " + message + "\n").format(
+            datetime.timedelta(seconds = time.monotonic() - _time_0),
+            *args))
+
+def warning(message, *args):
+    sys.stderr.write(
+        ("\t*** " + message + "\n").format(*args))
+
+
+TruePosition = collections.namedtuple("TruePosition",
+                                      ("lat", "lon", "ipv4", "asn", "cc"))
+
+positions = {}
+def load_true_positions(fname):
+    global positions
+    with open(fname) as fp:
+        rd = csv.DictReader(fp)
+        for row in rd:
+            pos = TruePosition(
+                float(row['latitude']), float(row['longitude']),
+                row['address_v4'], row['asn_v4'], row['country_code'].lower())
+
+            # sanity check
+            if not (-90 <= pos.lat < 90) or not (-180 < pos.lon < 180):
+                warning("{} ({}): position off globe: {}, {}",
+                        row['id'], pos.ipv4, pos.lat, pos.lon)
+            elif (-1 < pos.lat < 1) and (-1 < pos.lon < 1):
+                warning("{} ({}): null island: {}, {}",
+                        row['id'], pos.ipv4, pos.lat, pos.lon)
+            else:
+                positions[int(row['id'])] = pos
+
+def decode_filename(fname):
+    fname = os.path.splitext(os.path.basename(fname))[0]
+
+    # FIXME: hardcoded tag set and naming convention matching the
+    # hardcoding in 'calibrate'.
+    sp = fname.rfind('-')
+    tag = fname[:sp]
+    tid = fname[sp+1:]
+
+    calg, cset = {
+        'cbg-m-a': ('CBG',                'Combined'),
+        'cbg-m-1': ('CBG',                'Separate'),
+        'oct-m-a': ('Octant',             'Combined'),
+        'oct-m-1': ('Octant',             'Separate'),
+        'spo-m-a': ('Spotter (uniform)',  'Combined'),
+        'spo-m-1': ('Spotter (uniform)',  'Separate'),
+        'spo-g-a': ('Spotter (gaussian)', 'Combined'),
+        'spo-g-1': ('Spotter (gaussian)', 'Separate'),
+    }[tag]
+
+    return int(tid), calg, cset
+
+regions = []
+def load_regions(rgndir):
+    global regions
+    for fname in glob.glob(os.path.join(rgndir, "*.h5")):
+        label = os.path.splitext(os.path.basename(fname))[0]
+        rgn = ageo.Location.load(fname)
+        rgn.compute_probability_matrix_now()
+        regions.append((label, rgn))
+    regions.sort()
+
+def area_proportion_each_region(fname):
+    global regions
+    rv = np.zeros((len(regions),))
+    loc = ageo.Location.load(fname)
+    for i, (_, rgn) in enumerate(regions):
+        rv[i] = loc.intersection(rgn).area
+
+    rv /= rv.sum()
+    return fname, rv
+
+def get_region_containing(tpos):
+    global regions
+    for i, (_, rgn) in enumerate(regions):
+        if rgn.contains_point(tpos.lon, tpos.lat):
+            return i
+    return None
+
+region_containing = {}
+def compute_region_containing():
+    global region_containing
+    for id, tpos in sorted(positions.items()):
+        region_containing[id] = get_region_containing(tpos)
+
+def main():
+    progress("loading positions")
+    load_true_positions(sys.argv[1])
+    progress("loading regions")
+    load_regions(sys.argv[2])
+
+    progress("computing true containment")
+    compute_region_containing()
+
+    with multiprocessing.Pool() as pool:
+        predictions = sorted(glob.glob(os.path.join(sys.argv[3], "*.h5")))
+        wr = csv.writer(sys.stdout)
+        wr.writerow(["algorithm", "cal_set", "id", "true_rgn"] +
+                    [label for label, _ in regions])
+        for fname, prop in pool.imap_unordered(area_proportion_each_region, predictions):
+            tid, calg, cset = decode_filename(fname)
+            wr.writerow(np.concatenate([
+                [calg, cset, tid, region_containing[tid]],
+                prop
+            ]))
+            progress("{}: {}/{}", tid, calg, cset)
+
+main()

@@ -224,6 +224,8 @@ class Location:
             # normalization.
             assert len(V.shape) == 1
             S = V.sum()
+            if S == 0:
+                return 0
             if S != 1:
                 V /= S
             V *= V.shape[0]
@@ -246,7 +248,7 @@ class Location:
         """Find the shortest geodesic distance from (lon, lat) to a nonzero
            cell of the probability matrix."""
         aeqd_pt = pyproj.Proj(proj='aeqd', ellps='WGS84', datum='WGS84',
-                              lon_0=lon, lat_0=0)
+                              lon_0=lon, lat_0=lat)
         wgs_to_aeqd = functools.partial(pyproj.transform, wgs_proj, aeqd_pt)
         # mathematically, wgs_to_aeqd(Point(lon, lat)) == Point(0, 0);
         # the latter is faster and more precise

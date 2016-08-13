@@ -1,0 +1,157 @@
+#! /usr/bin/python3
+
+# usage: map measurement-dir output-dir
+
+import os
+import sys
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), 'lib')))
+
+import ageo
+import collections
+import csv
+import datetime
+import glob
+from math import pi, sin, cos
+import multiprocessing
+import pyproj
+import time
+
+_time_0 = time.monotonic()
+def progress(message, *args):
+    global _time_0
+    sys.stderr.write(
+        ("{}: " + message + "\n").format(
+            datetime.timedelta(seconds = time.monotonic() - _time_0),
+            *args))
+
+def warning(message, *args):
+    sys.stderr.write(
+        ("\t*** " + message + "\n").format(*args))
+
+_WGS84dist = pyproj.Geod(ellps='WGS84').inv
+def WGS84daz(lon1, lat1, lon2, lat2):
+    az, _, dist = _WGS84dist(lon1, lat1, lon2, lat2)
+    return dist, az
+
+TruePosition = collections.namedtuple("TruePosition",
+                                      ("lat", "lon", "ipv4", "asn", "cc"))
+
+def load_true_positions(fname):
+    with open(fname) as fp:
+        positions = {}
+        rd = csv.DictReader(fp)
+        for row in rd:
+            pos = TruePosition(
+                float(row['latitude']), float(row['longitude']),
+                row['address_v4'], row['asn_v4'], row['country_code'].lower())
+
+            # sanity check
+            if not (-90 <= pos.lat < 90) or not (-180 < pos.lon < 180):
+                warning("{} ({}): position off globe: {}, {}",
+                        row['id'], pos.ipv4, pos.lat, pos.lon)
+            elif (-1 < pos.lat < 1) and (-1 < pos.lon < 1):
+                warning("{} ({}): null island: {}, {}",
+                        row['id'], pos.ipv4, pos.lat, pos.lon)
+            else:
+                positions[int(row['id'])] = pos
+
+        return positions
+
+def decode_filename(fname):
+    fname = os.path.splitext(os.path.basename(fname))[0]
+
+    # FIXME: hardcoded tag set and naming convention matching the
+    # hardcoding in 'calibrate'.
+    sp = fname.rfind('-')
+    tag = fname[:sp]
+    tid = fname[sp+1:]
+
+    calg, cset = {
+        'cbg-m-a': ('CBG',                'Combined'),
+        'cbg-m-1': ('CBG',                'Separate'),
+        'oct-m-a': ('Octant',             'Combined'),
+        'oct-m-1': ('Octant',             'Separate'),
+        'spo-m-a': ('Spotter (uniform)',  'Combined'),
+        'spo-m-1': ('Spotter (uniform)',  'Separate'),
+        'spo-g-a': ('Spotter (gaussian)', 'Combined'),
+        'spo-g-1': ('Spotter (gaussian)', 'Separate'),
+    }[tag]
+
+    return int(tid), calg, cset
+
+# def compute_distance_and_azimuth(loc, tpos):
+#     tlon, tlat = tpos.lon, tpos.lat
+#     elon, elat = loc.centroid
+#     try:
+#         distance, azimuth = WGS84daz(elon, elat, tlon, tlat)
+#     except ValueError as e:
+#         raise ValueError("{} - elon={} elat={} tlon={} tlat={}"
+#                          .format(str(e), elon, elat, tlon, tlat)) from None
+#
+#     # azimuth is in degrees clockwise from north.
+#     # to convert to degrees counterclockwise from east, subtract from 90.
+#     # cos(pi/2 - theta) = sin(theta) and vice versa.
+#     azimuth_rad = azimuth * pi / 180
+#     dlon = sin(azimuth_rad) * distance
+#     dlat = cos(azimuth_rad) * distance
+#     return tlon, tlat, elon, elat, distance, azimuth, dlon, dlat
+
+def compute_distance_to_centroid(loc, tpos):
+    tlon, tlat = tpos.lon, tpos.lat
+    elon, elat = loc.centroid
+    try:
+        distance, _ = WGS84daz(elon, elat, tlon, tlat)
+    except ValueError as e:
+        raise ValueError("{} - elon={} elat={} tlon={} tlat={}"
+                         .format(str(e), elon, elat, tlon, tlat)) from None
+
+    return tlon, tlat, elon, elat, distance
+
+positions = None
+def crunch_one(fname):
+    global positions
+    landmark, calg, cset = decode_filename(fname)
+    if landmark not in positions:
+        warning("{}: no true position, skipping", landmark)
+        return None
+
+    loc = ageo.Location.load(fname)
+    try:
+        tlon, tlat, elon, elat, d_centroid = \
+            compute_distance_to_centroid(loc, positions[landmark])
+    except ValueError as e:
+        warning("{}: {}", fname, e)
+        return None
+
+    area = loc.area
+    d_boundary = loc.distance_to_point(tlon, tlat)
+    return (calg, cset, landmark,
+            tlon, tlat, elon, elat,
+            d_boundary, d_centroid, area)
+
+def main():
+    progress("loading...")
+    global positions
+    positions = load_true_positions(sys.argv[1])
+
+    with sys.stdout as outf:
+        wr = csv.writer(outf, dialect='unix', quoting=csv.QUOTE_MINIMAL)
+        wr.writerow((
+            "c.alg", "c.set", "landmark",
+            "t.lon", "t.lat", "e.lon", "e.lat",
+            "dist.boundary", "dist.centroid", "region.area"
+        ))
+
+        with multiprocessing.Pool() as pool:
+            for row in pool.imap_unordered(
+                    crunch_one,
+                    glob.glob(os.path.join(sys.argv[2], "*.h5"))):
+
+                if row is None:
+                    continue
+                progress("{}: {}/{}".format(row[2], row[0], row[1]))
+                wr.writerow(row)
+
+    progress("done")
+
+main()

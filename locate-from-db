@@ -1,0 +1,203 @@
+#! /usr/bin/python3
+
+# usage: locate-from-db output-dir positions calibration basemap \
+#                       database [batch selector...]
+
+import argparse
+import collections
+import contextlib
+import csv
+import datetime
+import gzip
+import multiprocessing
+import os
+import pickle
+import sys
+import time
+import zlib
+
+import psycopg2
+import psycopg2.extras
+
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), 'lib')))
+import ageo
+
+_time_0 = time.monotonic()
+
+def progress(message, *args):
+    global _time_0
+    sys.stderr.write(
+        ("{}: " + message + "\n").format(
+            datetime.timedelta(seconds = time.monotonic() - _time_0),
+            *args))
+
+def warning(message, *args):
+    sys.stderr.write(
+        ("\t*** " + message + "\n").format(*args))
+
+TruePosition = collections.namedtuple("TruePosition",
+                                      ("id", "lat", "lon", "ipv4", "asn", "cc"))
+def load_true_positions(fname):
+    with open(fname) as fp:
+        rd = csv.DictReader(fp)
+        positions = {}
+
+        for row in rd:
+            pos = TruePosition(
+                int(row['id']),
+                float(row['latitude']), float(row['longitude']),
+                row['address_v4'], row['asn_v4'], row['country_code'].lower())
+
+            # sanity check
+            if not (-90 <= pos.lat < 90) or not (-180 < pos.lon < 180):
+                warning("{} ({}): position off globe: {}, {}",
+                        row['id'], pos.ipv4, pos.lat, pos.lon)
+            elif (-1 < pos.lat < 1) and (-1 < pos.lon < 1):
+                warning("{} ({}): null island: {}, {}",
+                        row['id'], pos.ipv4, pos.lat, pos.lon)
+            else:
+                positions[row['address_v4']] = pos
+
+        return positions
+
+def load_calibration(cfname):
+    try:
+        with gzip.open(cfname, "rb") as fp:
+            return pickle.load(fp)
+
+    except (OSError, zlib.error, pickle.UnpicklingError) as e:
+        sys.stderr.write("unable to load calibration: {}: {}\n"
+                         .format(cfname, e))
+        sys.exit(1)
+
+def get_batch_list(db, selector):
+    cur = db.cursor()
+    query = ("SELECT b.id, COUNT(*) FROM batches b, measurements m "
+             "WHERE b.id = m.batch ")
+    if selector:
+        query += "AND (" + selector + ") "
+    query += "GROUP BY b.id;"
+    cur.execute(query)
+    batches = []
+    for row in cur:
+        if row[1] > 0:
+            batches.append(row[0])
+
+    progress("{} non-empty batches selected.", len(batches))
+    return batches
+
+def retrieve_batch(db, batchid):
+    cur = db.cursor(cursor_factory=psycopg2.extras.DictCursor)
+    cur.execute("""
+        SELECT b.id, b.client_lat, b.client_lon, b.client_addr,
+               c.label, c.country, c.asn,
+               b.proxied, b.proxy_lat, b.proxy_lon, b.proxy_addr,
+               p.label, p.country, p.asn
+          FROM batches b
+     LEFT JOIN hosts c ON b.client_addr = c.ipv4
+     LEFT JOIN hosts p ON b.proxy_addr  = p.ipv4
+         WHERE b.id = %s""", (batchid,))
+
+    # Copy the metadata into a normal dictionary to avoid problems later
+    # when it gets stuffed into a Location annotation.
+    metadata_raw = cur.fetchone()
+    metadata = {}
+    metadata.update(metadata_raw)
+
+    # We don't need a fancy cursor for the next step.
+    cur = db.cursor()
+    # There's only ever one source for any given batch (and it is always
+    # equal to either client_addr or proxy_addr for that batch).
+    cur.execute("SELECT dst, rtt FROM measurements "
+                "WHERE batch = %s ORDER BY dst, rtt", (batchid,))
+
+    measurements = collections.defaultdict(list)
+    for dst, rtt in cur:
+        if 0 <= rtt < 4000:
+            measurements[dst].append(rtt)
+        else:
+            warning("out of range: {} -> {}: {}", batchid, dst, rtt)
+
+    return metadata, measurements
+
+# these are filled in in main()
+positions    = None
+basemap      = None
+calibrations = None
+
+def process_batch(args):
+    global positions, calibrations, basemap
+    odir, mode, metadata, measurements = args
+    tag, cals, ranging, use_all = calibrations[mode]
+    bnd = basemap.bounds
+    obsv = []
+    for landmark, rtts in measurements.items():
+        if landmark not in positions: continue
+        lpos = positions[landmark]
+        if lpos.id not in cals: continue
+
+        obs = ageo.Observation(
+            basemap=basemap,
+            ref_lat=lpos.lat,
+            ref_lon=lpos.lon,
+            range_fn=ranging,
+            calibration=cals[0] if use_all else cals[lpos.id],
+            rtts=rtts)
+        obsv.append(obs)
+        bnd = bnd.intersection(obs.bounds)
+        assert not bnd.is_empty
+
+    loc = obsv[0]
+    for obs in obsv[1:]:
+        loc = loc.intersection(obs, bnd)
+
+    loc.annotations.update(metadata)
+    loc.save(os.path.join(odir, tag + "-" + str(metadata['id']) + ".h5"))
+    return tag, metadata['id']
+
+def marshal_batches(args, db, batches, modes):
+    for batchid in batches:
+        metadata, measurements = retrieve_batch(db, batchid)
+        for mode in modes:
+            yield (args.output_dir, mode, metadata, measurements)
+
+def inner_main(args, pool, db):
+    global calibrations
+
+    batches = get_batch_list(db, args.batch_selector)
+    modes = range(len(calibrations))
+    for tag, id in pool.imap_unordered(
+            process_batch,
+            marshal_batches(args, db, batches, modes)):
+        progress("{}: {}", id, tag)
+
+def main():
+    global positions, calibrations, basemap
+
+    ap = argparse.ArgumentParser()
+    ap.add_argument("output_dir")
+    ap.add_argument("positions")
+    ap.add_argument("calibration")
+    ap.add_argument("basemap")
+    ap.add_argument("database")
+    ap.add_argument("batch_selector", nargs=argparse.REMAINDER)
+    args = ap.parse_args()
+
+    args.batch_selector = " ".join(args.batch_selector)
+
+    # The worker pool must be created before the database connection,
+    # so that the database handle is not duplicated into the worker
+    # processes.  On the other hand, it's more efficient to propagate
+    # 'positions', 'basemap', and 'calibrations' into the worker
+    # processes by duplication.
+    progress("preparing...")
+    os.makedirs(args.output_dir, exist_ok=True)
+    positions = load_true_positions(args.positions)
+    calibrations = load_calibration(args.calibration)
+    basemap = ageo.Map(args.basemap)
+
+    with multiprocessing.Pool() as pool:
+        with contextlib.closing(psycopg2.connect(dbname=args.database)) as db:
+            inner_main(args, pool, db)
+
+main()

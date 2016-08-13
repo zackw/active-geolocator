@@ -5,14 +5,32 @@ __all__ = ('Location', 'Map', 'Observation')
 
 import bisect
 import functools
+import itertools
 import numpy as np
 import pyproj
 from scipy import sparse
-from shapely.geometry import Point, Polygon, box as Box
+from shapely.geometry import Point, MultiPoint, Polygon, box as Box
 from shapely.ops import transform as sh_transform
 import tables
 import math
 import sys
+
+# scipy.sparse.find() materializes vectors which, in several cases
+# below, can be enormous.  This is slower, but more memory-efficient.
+# Code from https://stackoverflow.com/a/31244368/388520 with minor
+# modifications.
+def iter_csr_nonzero(matrix):
+    irepeat = itertools.repeat
+    return zip(
+        # reconstruct the row indices
+        itertools.chain.from_iterable(
+            irepeat(i, r)
+            for (i,r) in enumerate(matrix.indptr[1:] - matrix.indptr[:-1])
+        ),
+        # matrix.indices gives the column indices as-is
+        matrix.indices,
+        matrix.data
+    )
 
 def Disk(x, y, radius):
     return Point(x, y).buffer(radius)
@@ -29,6 +47,10 @@ wgs_proj  = pyproj.Proj("+proj=longlat +ellps=WGS84 +datum=WGS84 +no_defs")
 gcen_proj = pyproj.Proj("+proj=geocent +datum=WGS84 +units=m +no_defs")
 wgs_to_gcen = functools.partial(pyproj.transform, wgs_proj, gcen_proj)
 gcen_to_wgs = functools.partial(pyproj.transform, gcen_proj, wgs_proj)
+
+# ... and Location.area()
+cea_proj   = pyproj.Proj(proj='cea', ellps='WGS84', lon_0=0, lat_ts=0)
+wgs_to_cea = functools.partial(pyproj.transform, wgs_proj, cea_proj)
 
 # Smooth over warts in pyproj.Geod.inv(), which is vectorized
 # internally, but does not support numpy-style broadcasting, and
@@ -103,6 +125,14 @@ class Location:
       probability - Probability mass matrix (may be lazily computed)
       bounds      - Bounding region of the nonzero portion of the
                     probability mass matrix (may be lazily computed)
+      centroid    - Centroid of the nonzero portion of the probability
+                    mass matrix (ditto)
+      area        - Weighted area of the nonzero portion of the probability
+                    mass matrix (ditto)
+      covariance  - Covariance matrix of the nonzero portion of the probability
+                    mass matrix (ditto) (relative to the centroid)
+      annotations - Dictionary of arbitrary additional metadata; saved and
+                    loaded but not otherwise inspected by this code
 
     You will normally not construct bare Location objects directly, only
     Map and Observation objects (these are subclasses).  However, any two
@@ -117,7 +147,8 @@ class Location:
                  north, south, east, west,
                  longitudes, latitudes,
                  probability=None, vacuity=None, bounds=None,
-                 centroid=None, covariance=None
+                 centroid=None, covariance=None,
+                 loaded_from=None, annotations=None
     ):
         self.resolution   = resolution
         self.fuzz         = fuzz
@@ -134,6 +165,9 @@ class Location:
         self._bounds      = bounds
         self._centroid    = centroid
         self._covariance  = covariance
+        self._loaded_from = loaded_from
+        self._area        = None
+        self.annotations  = annotations if annotations is not None else {}
 
     @property
     def probability(self):
@@ -159,12 +193,93 @@ class Location:
             self.compute_centroid_now()
         return self._covariance
 
+    @property
+    def area(self):
+        """Weighted area of the nonzero region of the probability matrix."""
+
+        if self._area is None:
+            # Notionally, each grid point should be treated as a
+            # rectangle of parallels and meridians _centered_ on the
+            # point.  The area of such a rectangle, however, only
+            # depends on its latitude and its breadth; the actual
+            # longitude values don't matter.  Since the grid is
+            # equally spaced, we can use [0],[1] always, and then we
+            # do not have to worry about crossing the discontinuity at ±180.
+            west = self.longitudes[0]
+            east = self.longitudes[1]
+            # For latitude, the actual values do matter, but the map
+            # never goes all the way to the poles, and the grid is
+            # equally spaced, so we can precompute the north-south
+            # delta from any pair of latitudes and not have to worry
+            # about running off the ends of the array.
+            d_lat = self.latitudes[1] - self.latitudes[0]
+
+            # We don't need X, so throw it away immediately.  (We
+            # don't use iter_csr_nonzero here because we need to
+            # modify V.)
+            X, Y, V = sparse.find(self.probability); X = None
+
+            # The value vector is supposed to be normalized, but make
+            # sure it is, and then adjust from 1-overall to 1-per-cell
+            # normalization.
+            assert len(V.shape) == 1
+            S = V.sum()
+            if S != 1:
+                V /= S
+            V *= V.shape[0]
+
+            area = 0
+            for y, v in zip(Y, V):
+                north = self.latitudes[y] + d_lat
+                south = self.latitudes[y] - d_lat
+                if not (-90 <= south < north <= 90):
+                    raise AssertionError("expected -90 <= {} < {} <= 90"
+                                         .format(south, north))
+
+                tile = sh_transform(wgs_to_cea, Box(west, south, east, north))
+                area += v * tile.area
+
+            self._area = area
+        return self._area
+
+    def distance_to_point(self, lon, lat):
+        """Find the shortest geodesic distance from (lon, lat) to a nonzero
+           cell of the probability matrix."""
+        aeqd_pt = pyproj.Proj(proj='aeqd', ellps='WGS84', datum='WGS84',
+                              lon_0=lon, lat_0=0)
+        wgs_to_aeqd = functools.partial(pyproj.transform, wgs_proj, aeqd_pt)
+        # mathematically, wgs_to_aeqd(Point(lon, lat)) == Point(0, 0);
+        # the latter is faster and more precise
+        pt = Point(0, 0)
+
+        # It is unacceptably costly to construct a shapely MultiPoint
+        # out of some locations with large regions (requires more than
+        # 32GB of scratch memory).  Instead, iterate over the points
+        # one at a time.
+        min_distance = math.inf
+        for x, y, v in iter_csr_nonzero(self.probability):
+            cell = sh_transform(wgs_to_aeqd, Point(self.longitudes[x],
+                                                   self.latitudes[y]))
+            if pt.distance(cell) - self.resolution*2 < min_distance:
+                cell = cell.buffer(self.resolution * 3/2)
+                min_distance = min(min_distance, pt.distance(cell))
+
+        if min_distance < self.resolution * 3/2:
+            return 0
+        return min_distance
+
     def compute_probability_matrix_now(self):
         """Compute and set self._probability and self._vacuous.
         """
-        M, vac = self.compute_probability_matrix_within(self.bounds)
-        self._probability = M
-        self._vacuous = vac
+        if self._probability is not None:
+            return
+
+        if self._loaded_from:
+            self._lazy_load_pmatrix()
+        else:
+            M, vac = self.compute_probability_matrix_within(self.bounds)
+            self._probability = M
+            self._vacuous = vac
 
     def compute_probability_matrix_within(self, bounds):
         """Subclasses must override if _probability is lazily computed.
@@ -202,6 +317,8 @@ class Location:
         """Subclasses must implement if necessary:
            compute and set self._bounds.
         """
+        if self._bounds is None and self._loaded_from:
+            self._lazy_load_pmatrix()
         assert self._bounds is not None
 
     def intersection(self, other, bounds=None):
@@ -332,6 +449,9 @@ class Location:
             t.attrs.centroid    = self.centroid
             t.attrs.covariance  = self.covariance
 
+            if self.annotations:
+                t.attrs.annotations = self.annotations
+
             cur = t.row
             for i, j, pmass in zip(*sparse.find(self.probability)):
                 lon = self.longitudes[i]
@@ -345,34 +465,58 @@ class Location:
 
             t.flush()
 
-    @classmethod
-    def load(cls, fname):
-        """Read an HDF file containing a location (the result of save())
-           and instantiate a Location object from it.
-        """
-
-        with tables.open_file(fname, "r") as f:
+    def _lazy_load_pmatrix(self):
+        assert self._loaded_from is not None
+        with tables.open_file(self._loaded_from, "r") as f:
             t = f.root.location
             M = sparse.dok_matrix((t.attrs.lon_count, t.attrs.lat_count),
                                   dtype=np.float32)
             vacuous = True
+            negative_warning = False
             for row in t.iterrows():
-                assert row['prob_mass'] > 0
-                M[row['grid_x'], row['grid_y']] = row['prob_mass']
-                vacuous = False
+                pmass = row['prob_mass']
+                # The occasional zero is normal, but negative numbers
+                # should never occur.
+                if pmass > 0:
+                    M[row['grid_x'], row['grid_y']] = pmass
+                    vacuous = False
+                elif pmass < 0:
+                    if not negative_warning:
+                        sys.stderr.write(fname + ": warning: negative pmass\n")
+                        negative_warning = True
 
             M = M.tocsr()
+
+            if vacuous:
+                wb = 0
+                eb = 0
+                sb = 0
+                nb = 0
+            else:
+                i, j = M.nonzero()
+                wb = self.longitudes[i.min()]
+                eb = self.longitudes[i.max()]
+                sb = self.latitudes[j.min()]
+                nb = self.latitudes[j.max()]
+
+            self._probability = M
+            self._vacuous = vacuous
+            self._bounds = Box(wb, sb, eb, nb)
+
+    @classmethod
+    def load(cls, fname):
+        """Read an HDF file containing a location (the result of save())
+           and instantiate a Location object from it.  The probability
+           matrix is lazily loaded.
+        """
+
+        with tables.open_file(fname, "r") as f:
+            t = f.root.location
 
             longs = np.linspace(t.attrs.west, t.attrs.east,
                                 t.attrs.lon_count)
             lats = np.linspace(t.attrs.south, t.attrs.north,
                                t.attrs.lat_count)
-
-            i, j = M.nonzero()
-            wb = longs[i.min()]
-            eb = longs[i.max()]
-            sb = lats[j.min()]
-            nb = lats[j.max()]
 
             return cls(
                 resolution  = t.attrs.resolution,
@@ -385,11 +529,10 @@ class Location:
                 lat_spacing = t.attrs.lat_spacing,
                 longitudes  = longs,
                 latitudes   = lats,
-                probability = M,
-                vacuity     = vacuous,
-                bounds      = Box(wb, sb, eb, nb),
-                centroid    = t.attrs.centroid,
-                covariance  = t.attrs.covariance
+                centroid    = getattr(t.attrs, 'centroid', None),
+                covariance  = getattr(t.attrs, 'covariance', None),
+                annotations = getattr(t.attrs, 'annotations', None),
+                loaded_from = fname
             )
 
 class Map(Location):

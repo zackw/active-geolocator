@@ -64,22 +64,6 @@ def load_regions(shapefile):
             regions_by_serial.append(regions[cc2])
             serial += 1
 
-AllegedLocation = collections.namedtuple("AllegedLocation",
-                                         ("id", "provider", "cc2", "name"))
-alleged_locations = {}
-def load_alleged_locations(afile):
-    global alleged_locations
-    with open(afile) as f:
-        rd = csv.reader(f)
-        header = next(rd)
-        if header != ["id", "provider", "cc2", "name"]:
-            raise RuntimeError("alleged locations header not as expected - {!r}"
-                               .format(header))
-        for row in rd:
-            id_, prov, cc2, name = row
-            id_ = int(id_)
-            alleged_locations[id_] = AllegedLocation(id_, prov, cc2, name)
-
 # this saves memory relative to sparse.find
 def iter_csr_nonzero(matrix):
     irepeat = itertools.repeat
@@ -110,7 +94,7 @@ def probability_each_region(loc, regions):
     return pvec
 
 def crunch_location(lname):
-    global regions, regions_by_serial, alleged_locations
+    global regions, regions_by_serial
 
     with tables.open_file(lname, "r") as fp:
         loc = fp.root.location
@@ -119,33 +103,26 @@ def crunch_location(lname):
         client_id="{:.2f}_{:.2f}".format(ann['client_lat'],
                                          ann['client_lon'])
         batch_id = ann['id']
-        alg = alleged_locations[batch_id]
+        provider = ann['proxy_provider']
+        a_cc2    = ann['proxy_alleged_cc2']
 
         pvec = probability_each_region(loc, regions)
 
-    ptrue = pvec[regions[alg.cc2].serial]
     itop5 = np.argsort(pvec)[:-6:-1] # this gets the last five
                                      # elements in reverse order
-    try:
-        ptop5 = pvec[itop5]
-        rtop5 = [regions_by_serial[i] for i in itop5]
-    except IndexError:
-        sys.stderr.write(repr(itop5) + "\n")
-        raise
+    if a_cc2 in regions:
+        itrue = regions[a_cc2].serial
+        if any(itop5 == itrue):
+            pass
+        else:
+            itop5 = np.append(itop5, [itrue])
+
+    ptop5 = pvec[itop5]
+    rtop5 = [regions_by_serial[i] for i in itop5]
 
     return [
-        (alg.id, alg.provider, alg.name, alg.cc2,
-         alg.name, alg.cc2, ptrue),
-        (alg.id, alg.provider, alg.name, alg.cc2,
-         rtop5[0].name, rtop5[0].cc2, ptop5[0]),
-        (alg.id, alg.provider, alg.name, alg.cc2,
-         rtop5[1].name, rtop5[1].cc2, ptop5[1]),
-        (alg.id, alg.provider, alg.name, alg.cc2,
-         rtop5[2].name, rtop5[2].cc2, ptop5[2]),
-        (alg.id, alg.provider, alg.name, alg.cc2,
-         rtop5[3].name, rtop5[3].cc2, ptop5[3]),
-        (alg.id, alg.provider, alg.name, alg.cc2,
-         rtop5[4].name, rtop5[4].cc2, ptop5[4])
+        (client_id, batch_id, provider, a_cc2, rtop5[i].cc2, ptop5[i])
+        for i in range(len(rtop5))
     ]
 
 _time_0 = time.monotonic()
@@ -159,22 +136,20 @@ def progress(message, *args):
 def main():
     progress("preparing")
     load_regions(sys.argv[1])
-    load_alleged_locations(sys.argv[2])
     progress("done preparing")
     with multiprocessing.Pool() as pool, \
          sys.stdout as ofp:
         wr = csv.writer(ofp)
-        wr.writerow(("id", "provider", "a.name", "a.cc",
-                     "l.name", "l.cc", "prob"))
+        wr.writerow(("client", "batch", "provider", "a.cc", "l.cc", "prob"))
 
         for result in pool.imap_unordered(
                 crunch_location,
-                sorted(glob.glob(os.path.join(sys.argv[3], "*.h5")),
+                sorted(glob.glob(os.path.join(sys.argv[2], "*.h5")),
                        key = lambda f: (os.stat(f).st_size, f))):
-            progress("{}: {}/{}", result[0][0], result[0][1], result[0][2])
+            progress("{} -> {}/{}", result[0][0], result[0][2], result[0][3])
             for row in result:
                 wr.writerow(row)
-                ofp.flush()
+            ofp.flush()
     progress("done")
 
 main()

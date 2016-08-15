@@ -657,7 +657,8 @@ class Observation(Location):
         # region that includes the whole planet but for a tiny disk
         # (which will probably be somewhere in the ocean anyway) so
         # just give up and say that the bound is the entire planet.
-        if distance_bound > 19975000:
+        # Similarly, if the distance bound is zero, give up.
+        if distance_bound > 19975000 or distance_bound == 0:
             self._bounds = Box(self.west, self.south, self.east, self.north)
             return
 

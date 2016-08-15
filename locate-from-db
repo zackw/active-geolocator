@@ -1,7 +1,7 @@
 #! /usr/bin/python3
 
-# usage: locate-from-db output-dir positions calibration basemap \
-#                       database [batch selector...]
+# usage: locate-from-db output-dir calibration basemap database \
+#                       [batch selector...]
 
 import argparse
 import collections
@@ -35,31 +35,6 @@ def warning(message, *args):
     sys.stderr.write(
         ("\t*** " + message + "\n").format(*args))
 
-TruePosition = collections.namedtuple("TruePosition",
-                                      ("id", "lat", "lon", "ipv4", "asn", "cc"))
-def load_true_positions(fname):
-    with open(fname) as fp:
-        rd = csv.DictReader(fp)
-        positions = {}
-
-        for row in rd:
-            pos = TruePosition(
-                int(row['id']),
-                float(row['latitude']), float(row['longitude']),
-                row['address_v4'], row['asn_v4'], row['country_code'].lower())
-
-            # sanity check
-            if not (-90 <= pos.lat < 90) or not (-180 < pos.lon < 180):
-                warning("{} ({}): position off globe: {}, {}",
-                        row['id'], pos.ipv4, pos.lat, pos.lon)
-            elif (-1 < pos.lat < 1) and (-1 < pos.lon < 1):
-                warning("{} ({}): null island: {}, {}",
-                        row['id'], pos.ipv4, pos.lat, pos.lon)
-            else:
-                positions[row['address_v4']] = pos
-
-        return positions
-
 def load_calibration(cfname):
     try:
         with gzip.open(cfname, "rb") as fp:
@@ -73,7 +48,7 @@ def load_calibration(cfname):
 def get_batch_list(db, selector):
     cur = db.cursor()
     query = ("SELECT b.id, COUNT(*) FROM batches b, measurements m "
-             "WHERE b.id = m.batch ")
+             "WHERE b.id = m.batch AND m.rtt > 0")
     if selector:
         query += "AND (" + selector + ") "
     query += "GROUP BY b.id;"
@@ -85,6 +60,17 @@ def get_batch_list(db, selector):
 
     progress("{} non-empty batches selected.", len(batches))
     return batches
+
+Position = collections.namedtuple("Position", ("lon", "lat"))
+def get_landmark_positions(db, batches):
+    cur = db.cursor()
+    cur.execute("SELECT DISTINCT h.ipv4, h.longitude, h.latitude"
+                "  FROM hosts h, measurements m"
+                " WHERE m.dst = h.ipv4"
+                "   AND m.batch = ANY(%s)",
+                (batches,))
+    return { row[0]: Position(row[1], row[2])
+             for row in cur }
 
 def retrieve_batch(db, batchid):
     cur = db.cursor(cursor_factory=psycopg2.extras.DictCursor)
@@ -108,15 +94,35 @@ def retrieve_batch(db, batchid):
     cur = db.cursor()
     # There's only ever one source for any given batch (and it is always
     # equal to either client_addr or proxy_addr for that batch).
-    cur.execute("SELECT dst, rtt FROM measurements "
-                "WHERE batch = %s ORDER BY dst, rtt", (batchid,))
+    # Throw out all measurements that didn't come back with either
+    # errno 0 or 111 (that is, success and ECONNREFUSED).  Also throw
+    # out RTT zero, which tends to make the calibration choke.
+    cur.execute("SELECT dst, rtt FROM measurements"
+                " WHERE batch = %s AND rtt > 0 AND status IN (0, 111)"
+                " ORDER BY rtt, dst", (batchid,))
 
     measurements = collections.defaultdict(list)
+    if metadata['proxied']:
+        adjustment = None
+    else:
+        adjustment = 0
     for dst, rtt in cur:
-        if 0 <= rtt < 4000:
-            measurements[dst].append(rtt)
-        else:
+        if not (0 <= rtt < 5000):
             warning("out of range: {} -> {}: {}", batchid, dst, rtt)
+            continue
+
+        if adjustment is None:
+            # For measurements through a proxy, we subtract off 5 ms
+            # less than the smallest observed RTT measurement; this is
+            # a cheap and good-enough-we-hope way to cut out the
+            # travel time _to_ the proxy, without risking other
+            # problems.  (The measurement procedure attempted to
+            # identify and ping the proxy's router; if that worked, it
+            # should be responsible for the lowest observed pings.)
+            adjustment = max(rtt - 5, 0)
+
+        measurements[dst].append(rtt - adjustment)
+
 
     return metadata, measurements
 
@@ -133,19 +139,20 @@ def process_batch(args):
     obsv = []
     for landmark, rtts in measurements.items():
         if landmark not in positions: continue
+        if landmark not in cals: continue
         lpos = positions[landmark]
-        if lpos.id not in cals: continue
 
         obs = ageo.Observation(
             basemap=basemap,
             ref_lat=lpos.lat,
             ref_lon=lpos.lon,
             range_fn=ranging,
-            calibration=cals[0] if use_all else cals[lpos.id],
+            calibration=cals[0] if use_all else cals[landmark],
             rtts=rtts)
         obsv.append(obs)
         bnd = bnd.intersection(obs.bounds)
-        assert not bnd.is_empty
+        if bnd.is_empty:
+            return tag, str(metadata['id']) + " (did not converge)"
 
     loc = obsv[0]
     for obs in obsv[1:]:
@@ -161,10 +168,9 @@ def marshal_batches(args, db, batches, modes):
         for mode in modes:
             yield (args.output_dir, mode, metadata, measurements)
 
-def inner_main(args, pool, db):
+def inner_main(args, pool, db, batches):
     global calibrations
 
-    batches = get_batch_list(db, args.batch_selector)
     modes = range(len(calibrations))
     for tag, id in pool.imap_unordered(
             process_batch,
@@ -176,7 +182,6 @@ def main():
 
     ap = argparse.ArgumentParser()
     ap.add_argument("output_dir")
-    ap.add_argument("positions")
     ap.add_argument("calibration")
     ap.add_argument("basemap")
     ap.add_argument("database")
@@ -187,17 +192,20 @@ def main():
 
     # The worker pool must be created before the database connection,
     # so that the database handle is not duplicated into the worker
-    # processes.  On the other hand, it's more efficient to propagate
-    # 'positions', 'basemap', and 'calibrations' into the worker
-    # processes by duplication.
+    # processes.  However, we also need the database connection before
+    # the worker processes exist, to load up 'positions', which is
+    # propagated into the worker processes by fork().  So we have to
+    # drop the database connection and pick it back up again.
     progress("preparing...")
     os.makedirs(args.output_dir, exist_ok=True)
-    positions = load_true_positions(args.positions)
     calibrations = load_calibration(args.calibration)
     basemap = ageo.Map(args.basemap)
+    with contextlib.closing(psycopg2.connect(dbname=args.database)) as db:
+        batches = get_batch_list(db, args.batch_selector)
+        positions = get_landmark_positions(db, batches)
 
     with multiprocessing.Pool() as pool:
         with contextlib.closing(psycopg2.connect(dbname=args.database)) as db:
-            inner_main(args, pool, db)
+            inner_main(args, pool, db, batches)
 
 main()

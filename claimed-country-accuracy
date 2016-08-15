@@ -1,0 +1,180 @@
+#! /usr/bin/python3
+
+import os
+import sys
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), 'lib')))
+
+import collections
+import csv
+import datetime
+import functools
+import itertools
+import glob
+import multiprocessing
+import time
+
+import numpy as np
+
+import fiona
+import fiona.crs
+import pyproj
+import shapely.geometry
+import shapely.ops
+import shapely.prepared
+
+# For memory efficiency, this program works directly with the on-disk
+# representation of Location savefiles.
+import tables
+
+WGS84proj = pyproj.Proj(proj="latlong", datum="WGS84", ellps="WGS84")
+
+Region = collections.namedtuple("Region",
+                                ("serial", "name", "cc2", "rgn", "prep"))
+
+
+fake_iso_a2 = {
+    "Ashmore and Cartier Is." : None,
+    "N. Cyprus"               : "xn",
+    "Indian Ocean Ter."       : None,
+    "Siachen Glacier"         : None,
+    "Kosovo"                  : "xk",
+    "Somaliland"              : "xs"
+}
+
+regions = {}
+regions_by_serial = []
+def load_regions(shapefile):
+    global regions
+    with fiona.open(shapefile) as f_regions:
+        f_proj = pyproj.Proj(f_regions.crs)
+        to_wgs = functools.partial(pyproj.transform, f_proj, WGS84proj)
+        serial = 0
+        for r in f_regions:
+            name = r['properties'].get('name', '')
+            cc2 = r['properties'].get('iso_a2', '-99').lower()
+            if cc2 == '-99':
+                cc2 = fake_iso_a2[name]
+                if cc2 is None:
+                    continue
+
+            rgn = shapely.ops.transform(to_wgs,
+                shapely.geometry.shape(r['geometry']))
+            prep = shapely.prepared.prep(rgn)
+            regions[cc2] = Region(serial, name, cc2, rgn, prep)
+            regions_by_serial.append(regions[cc2])
+            serial += 1
+
+AllegedLocation = collections.namedtuple("AllegedLocation",
+                                         ("id", "provider", "cc2", "name"))
+alleged_locations = {}
+def load_alleged_locations(afile):
+    global alleged_locations
+    with open(afile) as f:
+        rd = csv.reader(f)
+        header = next(rd)
+        if header != ["id", "provider", "cc2", "name"]:
+            raise RuntimeError("alleged locations header not as expected - {!r}"
+                               .format(header))
+        for row in rd:
+            id_, prov, cc2, name = row
+            id_ = int(id_)
+            alleged_locations[id_] = AllegedLocation(id_, prov, cc2, name)
+
+# this saves memory relative to sparse.find
+def iter_csr_nonzero(matrix):
+    irepeat = itertools.repeat
+    return zip(
+        # reconstruct the row indices
+        itertools.chain.from_iterable(
+            irepeat(i, r)
+            for (i,r) in enumerate(matrix.indptr[1:] - matrix.indptr[:-1])
+        ),
+        # matrix.indices gives the column indices as-is
+        matrix.indices,
+        matrix.data
+    )
+
+def probability_each_region(loc, regions):
+    pvec = np.zeros(len(regions))
+    for row in loc.iterrows():
+        v = row['prob_mass']
+        if v == 0: continue
+        lon = row['longitude']
+        lat = row['latitude']
+
+        pt = shapely.geometry.Point(lon, lat)
+        for r in regions.values():
+            if r.prep.contains(pt):
+                pvec[r.serial] += v
+                break
+    return pvec
+
+def crunch_location(lname):
+    global regions, regions_by_serial, alleged_locations
+
+    with tables.open_file(lname, "r") as fp:
+        loc = fp.root.location
+        ann = loc.attrs.annotations
+
+        client_id="{:.2f}_{:.2f}".format(ann['client_lat'],
+                                         ann['client_lon'])
+        batch_id = ann['id']
+        alg = alleged_locations[batch_id]
+
+        pvec = probability_each_region(loc, regions)
+
+    ptrue = pvec[regions[alg.cc2].serial]
+    itop5 = np.argsort(pvec)[:-6:-1] # this gets the last five
+                                     # elements in reverse order
+    try:
+        ptop5 = pvec[itop5]
+        rtop5 = [regions_by_serial[i] for i in itop5]
+    except IndexError:
+        sys.stderr.write(repr(itop5) + "\n")
+        raise
+
+    return [
+        (alg.id, alg.provider, alg.name, alg.cc2,
+         alg.name, alg.cc2, ptrue),
+        (alg.id, alg.provider, alg.name, alg.cc2,
+         rtop5[0].name, rtop5[0].cc2, ptop5[0]),
+        (alg.id, alg.provider, alg.name, alg.cc2,
+         rtop5[1].name, rtop5[1].cc2, ptop5[1]),
+        (alg.id, alg.provider, alg.name, alg.cc2,
+         rtop5[2].name, rtop5[2].cc2, ptop5[2]),
+        (alg.id, alg.provider, alg.name, alg.cc2,
+         rtop5[3].name, rtop5[3].cc2, ptop5[3]),
+        (alg.id, alg.provider, alg.name, alg.cc2,
+         rtop5[4].name, rtop5[4].cc2, ptop5[4])
+    ]
+
+_time_0 = time.monotonic()
+def progress(message, *args):
+    global _time_0
+    sys.stderr.write(
+        ("{}: " + message + "\n").format(
+            datetime.timedelta(seconds = time.monotonic() - _time_0),
+            *args))
+
+def main():
+    progress("preparing")
+    load_regions(sys.argv[1])
+    load_alleged_locations(sys.argv[2])
+    progress("done preparing")
+    with multiprocessing.Pool() as pool, \
+         sys.stdout as ofp:
+        wr = csv.writer(ofp)
+        wr.writerow(("id", "provider", "a.name", "a.cc",
+                     "l.name", "l.cc", "prob"))
+
+        for result in pool.imap_unordered(
+                crunch_location,
+                sorted(glob.glob(os.path.join(sys.argv[3], "*.h5")),
+                       key = lambda f: (os.stat(f).st_size, f))):
+            progress("{}: {}/{}", result[0][0], result[0][1], result[0][2])
+            for row in result:
+                wr.writerow(row)
+                ofp.flush()
+    progress("done")
+
+main()

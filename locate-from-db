@@ -72,13 +72,19 @@ def get_landmark_positions(db, batches):
     return { row[0]: Position(row[1], row[2])
              for row in cur }
 
+def router_for_addr(addr):
+    return addr[:addr.rfind('.')] + '.1'
+
 def retrieve_batch(db, batchid):
     cur = db.cursor(cursor_factory=psycopg2.extras.DictCursor)
     cur.execute("""
         SELECT b.id, b.client_lat, b.client_lon, b.client_addr,
                c.label, c.country, c.asn,
                b.proxied, b.proxy_lat, b.proxy_lon, b.proxy_addr,
-               p.label, p.country, p.asn
+               p.label, p.country, p.asn,
+               b.annot->>'proxy_label' as proxy_label,
+               b.annot->>'proxy_provider' as proxy_provider,
+               b.annot->>'proxy_alleged_cc2' as proxy_alleged_cc2
           FROM batches b
      LEFT JOIN hosts c ON b.client_addr = c.ipv4
      LEFT JOIN hosts p ON b.proxy_addr  = p.ipv4
@@ -92,14 +98,20 @@ def retrieve_batch(db, batchid):
 
     # We don't need a fancy cursor for the next step.
     cur = db.cursor()
-    # There's only ever one source for any given batch (and it is always
-    # equal to either client_addr or proxy_addr for that batch).
-    # Throw out all measurements that didn't come back with either
-    # errno 0 or 111 (that is, success and ECONNREFUSED).  Also throw
-    # out RTT zero, which tends to make the calibration choke.
-    cur.execute("SELECT dst, rtt FROM measurements"
-                " WHERE batch = %s AND rtt > 0 AND status IN (0, 111)"
-                " ORDER BY rtt, dst", (batchid,))
+    # There's only ever one source for any given batch (and it is
+    # always equal to either client_addr or proxy_addr for that
+    # batch).  Throw out all measurements that didn't come back with
+    # either errno 0 or 111 (that is, success and ECONNREFUSED).  Also
+    # throw out RTT zero, which tends to make the calibration choke.
+    # And finally throw out the actual proxy address and 127.0.0.1,
+    # both of which will have anomalously short RTTs.
+    cur.execute("""
+        SELECT dst, rtt FROM measurements
+         WHERE batch = %s AND rtt > 0
+           AND status IN (0, 111)
+           AND dst NOT IN ('127.0.0.1', %s)
+         ORDER BY rtt, dst
+         """, (batchid, metadata['proxy_addr']))
 
     measurements = collections.defaultdict(list)
     if metadata['proxied']:
@@ -112,18 +124,22 @@ def retrieve_batch(db, batchid):
             continue
 
         if adjustment is None:
-            # For measurements through a proxy, we subtract off 5 ms
-            # less than the smallest observed RTT measurement; this is
-            # a cheap and good-enough-we-hope way to cut out the
-            # travel time _to_ the proxy, without risking other
-            # problems.  (The measurement procedure attempted to
-            # identify and ping the proxy's router; if that worked, it
-            # should be responsible for the lowest observed pings.)
-            adjustment = max(rtt - 5, 0)
+            # The measurement procedure attempted to identify and ping
+            # the proxy's router; if that worked, we can say with high
+            # confidence that its ping time represents the travel time
+            # to the proxy, and we should subtract that off.  If that
+            # didn't work, the minimum ping time is a host _near_ the
+            # proxy, and we arbitrarily set its travel time to five
+            # milliseconds.  The -0.1 in the router case is to prevent
+            # zero RTTs.
+            if dst == router_for_addr(metadata['proxy_addr']):
+                adjustment = max(rtt - 0.1, 0)
+            else:
+                adjustment = max(rtt - 5, 0)
 
         measurements[dst].append(rtt - adjustment)
 
-
+    metadata['estimated_proxy_rtt'] = adjustment
     return metadata, measurements
 
 # these are filled in in main()
@@ -152,12 +168,13 @@ def process_batch(args):
         obsv.append(obs)
         bnd = bnd.intersection(obs.bounds)
         if bnd.is_empty:
-            return tag, str(metadata['id']) + " (did not converge)"
+            return tag + " (empty intersection region)", str(metadata['id'])
 
     loc = obsv[0]
     for obs in obsv[1:]:
         loc = loc.intersection(obs, bnd)
 
+    loc = loc.intersection(basemap, bnd)
     loc.annotations.update(metadata)
     loc.save(os.path.join(odir, tag + "-" + str(metadata['id']) + ".h5"))
     return tag, metadata['id']

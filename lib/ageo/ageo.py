@@ -374,13 +374,28 @@ class Location:
             M = M2
             V = True
         else:
-            M = M1.multiply(M2)
-            s = M.sum()
-            if s:
-                M /= s
-                V = False
-            else:
-                V = True
+            M = None
+            V = False
+            # Optimization: if M1 and M2 have the same set of nonzero
+            # entries, and all the nonzero values in one matrix are equal
+            # or nearly so, then just use the other matrix as the result,
+            # because the multiply-and-then-normalize operation will be a
+            # nop.
+            if (np.array_equal(M1.indptr, M2.indptr) and
+                np.array_equal(M1.indices, M2.indices)):
+                if np.allclose(M1.data, M1.data[0]):
+                    M = M2
+                elif np.allclose(M2.data, M2.data[0]):
+                    M = M1
+
+            if M is None:
+                M = M1.multiply(M2)
+                s = M.sum()
+                if s:
+                    M /= s
+                else:
+                    V = True
+                M.eliminate_zeros()
 
         return Location(
             resolution  = self.resolution,
@@ -411,7 +426,7 @@ class Location:
         X = []
         Y = []
         Z = []
-        for i, j, v in zip(*sparse.find(self.probability)):
+        for i, j, v in iter_csr_nonzero(self.probability):
             lon = self.longitudes[i]
             lat = self.latitudes[j]
             # PROJ.4 requires a dummy third argument when converting
@@ -452,7 +467,8 @@ class Location:
 
         with tables.open_file(fname, mode="w", title="location") as f:
             t = f.create_table(f.root, "location",
-                               LocationRowOnDisk, "location")
+                               LocationRowOnDisk, "location",
+                               expectedrows=self.probability.getnnz())
             t.attrs.resolution  = self.resolution
             t.attrs.fuzz        = self.fuzz
             t.attrs.north       = self.north
@@ -470,7 +486,7 @@ class Location:
                 t.attrs.annotations = self.annotations
 
             cur = t.row
-            for i, j, pmass in zip(*sparse.find(self.probability)):
+            for i, j, pmass in iter_csr_nonzero(self.probability):
                 lon = self.longitudes[i]
                 lat = self.latitudes[j]
                 cur['grid_x']    = i
@@ -735,12 +751,11 @@ class Observation(Location):
             s = pvals.sum()
             if s:
                 pvals /= s
-                return (
-                    sparse.csr_matrix((pvals, (I, J)),
+                M = sparse.csr_matrix((pvals, (I, J)),
                                       shape=(len(self.longitudes),
-                                             len(self.latitudes))),
-                    False
-                )
+                                             len(self.latitudes)))
+                M.eliminate_zeros()
+                return (M, False)
 
         return (
             sparse.csr_matrix((len(self.longitudes),

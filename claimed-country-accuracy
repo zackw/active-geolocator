@@ -27,9 +27,12 @@ import shapely.prepared
 import tables
 
 WGS84proj = pyproj.Proj(proj="latlong", datum="WGS84", ellps="WGS84")
+CEAproj = pyproj.Proj(proj="cea", ellps="WGS84", lon_0=0, lat_ts=0)
+wgs_to_cea = functools.partial(pyproj.transform, WGS84proj, CEAproj)
 
 Region = collections.namedtuple("Region",
-                                ("serial", "name", "cc2", "rgn", "prep"))
+                                ("serial", "name", "cc2",
+                                 "rgn", "prep", "area"))
 
 
 fake_iso_a2 = {
@@ -60,7 +63,8 @@ def load_regions(shapefile):
             rgn = shapely.ops.transform(to_wgs,
                 shapely.geometry.shape(r['geometry']))
             prep = shapely.prepared.prep(rgn)
-            regions[cc2] = Region(serial, name, cc2, rgn, prep)
+            area = shapely.ops.transform(wgs_to_cea, rgn).area
+            regions[cc2] = Region(serial, name, cc2, rgn, prep, area)
             regions_by_serial.append(regions[cc2])
             serial += 1
 
@@ -80,6 +84,13 @@ def iter_csr_nonzero(matrix):
 
 def probability_each_region(loc, regions):
     pvec = np.zeros(len(regions))
+    avec = np.zeros(len(regions))
+
+    # see commentary in ageo.py::Location.area
+    west = loc.attrs.west
+    east = loc.attrs.west + loc.attrs.lon_spacing
+    d_lat = loc.attrs.lat_spacing/2
+
     for row in loc.iterrows():
         v = row['prob_mass']
         if v == 0: continue
@@ -89,8 +100,28 @@ def probability_each_region(loc, regions):
         pt = shapely.geometry.Point(lon, lat)
         for r in regions.values():
             if r.prep.contains(pt):
+
+                north = lat + d_lat
+                south = lat - d_lat
+                tile = shapely.ops.transform(wgs_to_cea,
+                    shapely.geometry.box(west, south, east, north))
+                avec[r.serial] += r.area
                 pvec[r.serial] += v
                 break
+
+    ptot = pvec.sum()
+    if ptot == 0: return pvec
+    if ptot != 1: pvec /= ptot
+
+    for i in range(len(avec)):
+        if avec[i]:
+            avec[i] /= regions_by_serial[i].area
+
+    atot = avec.sum()
+    if atot != 1: avec /= atot
+
+    pvec *= avec
+    pvec /= pvec.sum()
     return pvec
 
 def crunch_location(lname):
@@ -142,14 +173,18 @@ def main():
         wr = csv.writer(ofp)
         wr.writerow(("client", "batch", "provider", "a.cc", "l.cc", "prob"))
 
-        for result in pool.imap_unordered(
-                crunch_location,
-                sorted(glob.glob(os.path.join(sys.argv[2], "*.h5")),
-                       key = lambda f: (os.stat(f).st_size, f))):
-            progress("{} -> {}/{}", result[0][0], result[0][2], result[0][3])
+        todo = sorted(glob.glob(os.path.join(sys.argv[2], "*.h5")),
+                      key = lambda f: (os.stat(f).st_size, f))
+        n_todo = len(todo)
+        n = 0
+        for result in pool.imap_unordered(crunch_location, todo):
             for row in result:
                 wr.writerow(row)
             ofp.flush()
+
+            n += 1
+            progress("{}/{}: {} -> {}/{}",
+                     n, n_todo, result[0][0], result[0][2], result[0][3])
     progress("done")
 
 main()

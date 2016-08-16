@@ -212,7 +212,7 @@ class Location:
             # equally spaced, so we can precompute the north-south
             # delta from any pair of latitudes and not have to worry
             # about running off the ends of the array.
-            d_lat = self.latitudes[1] - self.latitudes[0]
+            d_lat = (self.latitudes[1] - self.latitudes[0]) / 2
 
             # We don't need X, so throw it away immediately.  (We
             # don't use iter_csr_nonzero here because we need to

@@ -1,0 +1,11 @@
+main { display: none }
+main.browserok { display: inherit }
+
+fieldset {
+    border: none;
+    padding: 0;
+    margin: 1em 2em;
+}
+fieldset > fieldset {
+    margin: 0 2em;
+}

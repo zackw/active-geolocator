@@ -53,8 +53,6 @@ header {
   float: left;
   margin-right: 14px;
 }
-#title {
-}
 #navbar {
   display: block;
   list-style: none;
@@ -84,7 +82,6 @@ header {
   #title::before { content: "CyLab " }
 }
 
-}
 @media screen and (max-width: 399px) {
   #logo > img { width: 75px }
 }

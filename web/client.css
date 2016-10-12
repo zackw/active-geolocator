@@ -67,14 +67,6 @@ footer {
     border: 1px solid #eee;
     overflow: hidden;
 }
-/*
-#map_container::after {
-    visibility: hidden;
-    display: block;
-    content: " ";
-    clear: both;
-    height: 0;
-}*/
 
 /* see http://alistapart.com/article/creating-intrinsic-ratios-for-video */
 #map_aspect_ratio {

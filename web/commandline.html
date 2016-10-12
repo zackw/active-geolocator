@@ -1,0 +1,183 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Active Geolocation Project — Command-line Measurement</title>
+  <link rel="stylesheet" href="s/styles.css">
+</head>
+<body>
+  <div class="text_container">
+  <header>
+  <a id="logo" href="https://www.cylab.cmu.edu/"><img
+     alt="Carnegie Mellon University CyLab" src="s/main-logo.png"></a>
+  <h1 id="title">Active Geolocation Project</h1>
+  <ul id="navbar">
+    <li><a href="index.html">Web-based Measurement</a></li>
+    <li><a id="active" href="commandline.html">Command-line Measurement</a></li>
+    <li><a href="research.html">Research Questions</a></li>
+  </ul>
+  </header>
+    <h2>Command-line Measurement</h2>
+    <p>In addition to the <a href="index.html">web-based demo and
+        measurement client</a> that you may already have seen, we have
+        a command-line tool for taking measurements.  It is more
+        accurate than the browser-based measurement, and it can be
+        used on computers that you only have remote shell access to.
+        However, it doesn't work on Windows (if you know how to time
+        TCP handshakes with high accuracy on Windows, we’d be glad to
+        <a href="https://github.com/zackw/active-geolocator">take your
+        patches</a>), and it is less user-friendly.</p>
+
+    <p>When you run the tool, you need to tell it the location of the
+      computer it’s running on, and whether it’s using a network
+      proxy.  It will communicate with this server, and with roughly
+      200 “landmark” servers around the world (the “anchor” servers of
+      the <a href="https://atlas.ripe.net/">RIPE Atlas</a>).  We
+      record all the information you provide, the round-trip time
+      measurements, and the public IP address of the computer running
+      the tool (if you are using a proxy, this will be the proxy’s
+      address).
+
+    <p>CMU’s Office of Research Integrity and Compliance requires
+      us to warn you that the data we collect is considered
+      “<a href="https://en.wikipedia.org/wiki/Personally_identifiable_information">personally
+        identifiable information</a>” under US law, and that the
+      university is legally required to store all research data
+      for at least three years.  We take care to protect it:</p>
+
+    <ul>
+      <li>We don’t ask for your name, your email address, or
+        anything else about you.</li>
+      <li>We only ask for your true location to within one
+        kilometer (1/100 of a degree).</li>
+      <li>All of the data is encrypted in transmission from your
+        computer to our database.</li>
+      <li>The database is on a computer under our physical
+        control.  Only the researchers involved in this study have
+        access to it.</li>
+      <li>We will only reveal your IP address if required to do
+        so by a future law, regulation, subpoena or court order.</li>
+      <li>We might, in the future, publish a version of the
+        database for other researchers to use. If we do this, the
+        IP addresses will all be replaced with
+        “<a href="https://en.wikipedia.org/wiki/Autonomous_system"
+            >autonomous system</a>” numbers, which identify each
+        computer’s ISP but not the computer itself. If you don’t
+        want us to publish even this much information, you can
+        tell us so when you run the tool.</li>
+    </ul>
+
+    <p>However, participating in this study could still harm you,
+      especially if our database is stolen.  The thief would be
+      able to associate your IP address with your location, more
+      precisely than they could if they only knew your IP address.
+      If there’s someone specific who must not find out where you
+      live, we recommend you don’t send us data collected by a
+      computer in your house.</p>
+
+    <p>Also, for legal reasons, please don’t send us any data if
+      you are younger than 18 years old.</p>
+
+    <p>If you want to ask questions about this study, before or
+      after sending us data, please contact Zachary Weinberg
+      at <a href="mailto:zackw@cmu.edu">zackw@cmu.edu</a>, or
+      Nicolas Christin at
+      <a href="mailto:nicolasc@cmu.edu">nicolasc@cmu.edu</a>.</p>
+
+    <p>If you have concerns about this study, or questions about
+      your rights as a research participant, you can contact the
+      Office of Research Integrity and Compliance directly,
+      at <a href="mailto:irb-review@andrew.cmu.edu">irb-review@andrew.cmu.edu</a>
+      or <a href="tel:+14122681901">412-268-1901</a> or
+      <a href="tel:+14122685460">412-268-5460</a>.</p>
+
+    <h3>Determining the computer’s location</h3>
+
+    <p>The best way to get the computer’s location is with <a href=
+      "https://en.wikipedia.org/wiki/Global_Positioning_System">GPS</a>;
+      most smartphones can take a GPS reading. The iPhone ships with a
+      “Compass” utility that, among other things, shows you your
+      latitude and longitude (in degrees, minutes, and seconds; you
+      will have to convert). For Android, you need a third-party app:
+      we suggest “<a href=
+      "https://play.google.com/store/apps/details?id=com.gpscoordinatesandlocation">My
+      GPS Coordinates</a>”. If you don’t have a GPS-capable phone or
+      dedicated receiver, or you can’t go to where the computer is and
+      take a GPS reading, the next best option is to look up the
+      postal address of the building in an address-to-location
+      service, such
+      as <a href="http://www.latlong.net/convert-address-to-lat-long/.html">latlong.net</a>.</p>
+
+    <p><em>Don’t</em> look the computer’s IP address up in a geolocation
+      service to get its latitude and longitude, because one of the goals of
+      this project is to audit the accuracy of those services.</p>
+
+    <h3>Running the command-line tool</h3>
+
+    <p>The measurement software is only available as a Git
+      checkout. It has two components, one written in Python and the
+      other in C. The Python component has no dependencies outside the
+      standard library, and is known to work with versions 2.7, 3.4,
+      and 3.5 of the interpreter. The C component is self-contained
+      (not a Python module), depends only on standard ISO C and POSIX
+      interfaces, and is known to work on recent versions of Linux,
+      FreeBSD, and OSX. It should work on any modern Unix.  (If you
+      know how to time TCP handshakes with high accuracy on Windows,
+      we’d be glad to
+        <a href="https://github.com/zackw/active-geolocator">take your
+        patches</a>.)  You are encouraged to read the
+      <a href=
+      "https://github.com/zackw/active-geolocator/tree/master/measurement-client/">
+      source code</a> of both components before running them.</p>
+    <p>Once you have the latitude and longitude of the computer, open a
+      shell window and type the following commands:</p>
+<pre>git clone https://github.com/zackw/active-geolocator
+cd active-geolocator/measurement-client
+./configure
+make
+./probe --latitude=&lt;LATITUDE&gt; --longitude=&lt;LONGITUDE&gt;</pre>
+    <p>where <code>&lt;LATITUDE&gt;</code>
+      and <code>&lt;LONGITUDE&gt;</code> are the latitude and
+      longitude you looked up earlier, as decimal degrees. Use
+      negative numbers for south of the equator / west of
+      Greenwich. If you don’t want the data you submit to be included
+      in any future publication of a redacted version of our database,
+      append <code>--no-publication</code> to the <code>probe</code>
+      command.</p>
+    <p>The final <code>probe</code> command may take as much as an hour to
+      run, but 5 to 20 minutes is more typical.  It reports its progress once
+      a minute. The results are automatically uploaded to the project website,
+      and are also written to a
+      file <code>probe-result-YYYY-MM-DD-N.json</code> in the working
+      directory.</p>
+    <p>If any of the above commands fail, please <a href=
+      "https://github.com/zackw/active-geolocator/issues/new">file an
+      issue</a>. We will need to see the unedited, complete output of the
+      commands up to the point where they failed, and we will also need to
+      know which operating system and compiler you are using. If a file named
+      <code>config.log</code> exists in the working directory, please
+      attach it to the issue (you may have to rename
+      it <code>config.txt</code> first, because
+      Github). Do <em>not</em> attach
+      any <code>probe-result-*.json</code> files to Github issues;
+      this would link your physical location to your Github
+      identity.</p>
+    <p>If you have access to computers in several cities, please do run the
+      software on all of them. It’s not as helpful to run it on more than one
+      computer in the <em>same</em> city, unless their routes to the Internet
+      backbone are very different (for instance, if one gets its connectivity
+      from a residential ISP, and another from a cellphone system).</p>
+    <p>If you have access to VPN or SOCKSv5 proxies, and you can find out
+      the accurate location of the proxy <em>as well as</em> the client host,
+      please do run the measurement through the proxy. For VPNs, activate the
+      VPN as the default route, then do:</p>
+<pre>./probe --latitude=&lt;CLIENT LAT&gt; --longitude=&lt;CLIENT LONG&gt; \
+        --proxy-latitude=&lt;PROXY LAT&gt; --proxy-longitude=&lt;PROXY LONG&gt;</pre>
+    <p>For SOCKS you must explicitly state the proxy’s address.
+      Authentication is not supported.</p>
+<pre>./probe --latitude=&lt;CLIENT LAT&gt; --longitude=&lt;CLIENT LONG&gt; \
+        --proxy-latitude=&lt;PROXY LAT&gt; --proxy-longitude=&lt;PROXY LONG&gt; \
+        --socks5=&lt;HOST:PORT&gt;</pre>
+  </div>
+</body>
+</html>

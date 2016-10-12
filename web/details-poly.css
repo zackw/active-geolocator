@@ -1,0 +1,16 @@
+/* Additional style rules required when polyfilling <details> */
+details, summary {
+    display: block;
+}
+details:not([open]) > :not(summary) {
+    display: none;
+}
+summary:before {
+    content: "▶";
+    display: inline-block;
+    font-size: .8em;
+    width: 1.5em;
+}
+details[open] > summary:before {
+    content: "▼";
+}

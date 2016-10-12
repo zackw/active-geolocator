@@ -2,8 +2,9 @@ body {
   background-color: #fff;
   padding:12px;
   font: 14px/1.5 Verdana, Arial, Helvetica, sans-serif;
-  color:#444;
-  font-weight:400;
+  color: #444;
+  font-weight: 400;
+  max-width: 1024px;
 }
 
 h1, h2, h3 {
@@ -16,56 +17,25 @@ h1 {
 }
 
 h2 {
-  color:#393939;
+  color:#974b17;
 }
 
-h3, h4, h5, h6 {
-  color:#494949;
+h3 {
+  color:#974b17;
+  font-weight: bold;
+  border-top: 3px double #ccc;
+  margin-top: 2em;
+  padding-top: 1em;
 }
 
 a {
   text-decoration:none;
 }
 
-#logo, #navbar {
-  margin: 0 10px 10px 10px;
-  position:fixed;
-}
-
-#navbar {
-  margin-top: 96px;
-  padding: 0;
-  list-style: none;
-  border-right:1px solid #e0e0e0;
-}
-
-#navbar li {
-  color: #464646;
-  width:100px;
-  text-align: right;
-  padding-left: 24px;
-  padding-right: 24px;
-  margin-top: 18px;
-  margin-bottom: 18px;
-  margin-left: 12px;
-  font-size: 12px;
-}
-
-#navbar li:hover, #navbar li a:hover {
-  color:#7493a2;
-  cursor: pointer;
-}
-
 #active {
-  color: #7493a2;
+  color: #974b17;
   font-size: 12px;
   font-weight: bold;
-}
-
-#content {
-  margin: 38px 20px 0 200px;
-  word-wrap: break-word;
-  max-width: 60em;
 }
 
 code {
@@ -76,38 +46,52 @@ pre {
   margin-left: 2em;
 }
 
-@media screen and (max-width: 850px) {
-  #logo {
-    float: none;
-    position: absolute;
-  }
-  #logo > img { width: 100px }
-  #navbar {
-    float: none;
-    position: absolute;
-    display: block;
-    top: 10px;
-    left: 210px;
-    border: none;
-    padding: 0;
-    margin: 0;
-  }
-  #navbar > li {
-    display: block;
-    width: auto;
-    padding: 0;
-    margin: 0 1em 0 0;
-    text-align: left;
-  }
-  #content { margin: 80px 0 0 0; }
+header {
+  max-width: 650px;
+}
+#logo {
+  float: left;
+  margin-right: 14px;
+}
+#title {
+}
+#navbar {
+  display: block;
+  list-style: none;
+}
+
+#navbar > li {
+  color: #464646;
+  font-size: 12px;
+  display: block;
+  width: auto;
+  padding: 0;
+  margin: 0;
+  text-align: right;
+}
+
+.text_container {
+    max-width: 700px;
+}
+
+#navbar li:hover, #navbar li a:hover {
+  color:#7493a2;
+  cursor: pointer;
+}
+
+@media screen and (max-width: 645px) {
+  #logo { display: none }
+  #title::before { content: "CyLab " }
+}
+
 }
 @media screen and (max-width: 399px) {
   #logo > img { width: 75px }
-  #navbar { left: 120px }
 }
 
 @media print {
   #logo, #navbar { display: none }
-  #content { margin: 0 }
-  h1::before { content: "CyLab " }
+  .text_container { margin: 0 }
+  #map_container { }
+  #title::before { content: "CyLab " }
 }

@@ -1,0 +1,128 @@
+noscript { display: block }
+.hide { display: none }
+.message {
+    margin: 20px 60px;
+    padding: 20px 10px 20px 70px;
+    background-repeat: no-repeat;
+    background-position: 10px center;
+}
+/* loading.gif is "balls" from http://loading.io/ */
+.wait_message {
+    background-image: url("loading.gif");
+}
+/* error.png based on https://commons.wikimedia.org/wiki/File:Deletion_icon.svg */
+.error_message {
+    background-color: #ffbaba;
+    border: 1px solid red;
+    background-image: url("error.png");
+}
+.validation_error {
+    color: red;
+    font-size: small;
+    font-style: italic;
+    padding-left: 1em;
+}
+#after_demo {
+    margin-left: 20px;
+    margin-right: 20px;
+}
+fieldset {
+    border: none;
+    padding: 0;
+    margin: 1em 2em;
+}
+fieldset > fieldset {
+    margin: 0 2em;
+}
+button {
+    margin: 5px 0 0 5px;
+}
+progress {
+    display: block;
+    width: 90%;
+    margin: 5px auto;
+}
+pre {
+    font-style: normal;
+}
+#log {
+    font-size: x-small;
+    width: 95%;
+    height: 30em;
+    margin: 10px 2.5%;
+    border: 2px inset;
+    overflow: scroll;
+}
+footer {
+    font-size: smaller;
+    font-style: italic;
+    clear: both;
+}
+#consent_form { clear: both; }
+#map_container {
+    float: right;
+    width: 550px;
+    margin: .83em;
+    padding: 10px;
+    border: 1px solid #eee;
+    overflow: hidden;
+}
+/*
+#map_container::after {
+    visibility: hidden;
+    display: block;
+    content: " ";
+    clear: both;
+    height: 0;
+}*/
+
+/* see http://alistapart.com/article/creating-intrinsic-ratios-for-video */
+#map_aspect_ratio {
+    position: relative; /* abspos container */
+    height: 0;
+    width: 100%;
+    padding-bottom: 100%;
+}
+#map {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+}
+#go {
+    /* place on top of the map */
+    position: absolute;
+    /* top/left percentages are relative to parent,
+       transform percentages are relative to element */
+    top: 50%;
+    left: 50%;
+    -moz-transform: translate(-50%, -50%);
+    -webkit-transform: translate(-50%, -50%);
+    transform: translate(-50%, -50%);
+    font-size: 200%;
+    z-index: 10;
+}
+#map_units {
+    float: left;
+    text-align: left;
+    margin: 0 0 5px 5px;
+}
+#map_key {
+    float: right;
+    text-align: right;
+    margin-right: 5px;
+    margin-bottom: 5px;
+    font-size: 12px;
+}
+#map_key > img { height: 12px }
+#offstage { display: none }
+
+@media all and (max-width: 799px) {
+    #map_container {
+        float: none;
+        margin: .83em auto;
+        width: 75%;
+        max-width: 550px;
+    }
+}

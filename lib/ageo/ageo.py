@@ -125,12 +125,12 @@ class Location:
       probability - Probability mass matrix (may be lazily computed)
       bounds      - Bounding region of the nonzero portion of the
                     probability mass matrix (may be lazily computed)
-      centroid    - Centroid of the nonzero portion of the probability
-                    mass matrix (ditto)
-      area        - Weighted area of the nonzero portion of the probability
-                    mass matrix (ditto)
-      covariance  - Covariance matrix of the nonzero portion of the probability
-                    mass matrix (ditto) (relative to the centroid)
+      centroid    - Centroid of the nonzero &c
+      area        - Weighted area of the nonzero &c
+      covariance  - Covariance matrix of the nonzero &c
+                    (relative to the centroid)
+      rep_pt      - "Representative point" of the nonzero &c; see docstring
+                    for exactly what this means
       annotations - Dictionary of arbitrary additional metadata; saved and
                     loaded but not otherwise inspected by this code
 
@@ -147,7 +147,7 @@ class Location:
                  north, south, east, west,
                  longitudes, latitudes,
                  probability=None, vacuity=None, bounds=None,
-                 centroid=None, covariance=None,
+                 centroid=None, covariance=None, rep_pt=None,
                  loaded_from=None, annotations=None
     ):
         self.resolution   = resolution
@@ -165,6 +165,7 @@ class Location:
         self._bounds      = bounds
         self._centroid    = centroid
         self._covariance  = covariance
+        self._rep_pt      = rep_pt
         self._loaded_from = loaded_from
         self._area        = None
         self.annotations  = annotations if annotations is not None else {}
@@ -243,6 +244,47 @@ class Location:
 
             self._area = area
         return self._area
+
+    @property
+    def rep_pt(self):
+        """Representative point of the nonzero region of the probability
+           matrix.  This is the point, within the nonzero region,
+           whose _weighted_ squared geodesic distance to the centroid
+           is minimized.
+        """
+        if self._rep_pt is None:
+            lons = self.longitudes
+            lats = self.latitudes
+            cen = self.centroid
+            aeqd_cen = pyproj.Proj(proj='aeqd', ellps='WGS84', datum='WGS84',
+                                   lon_0=cen[0], lat_0=cen[1])
+            wgs_to_aeqd = functools.partial(pyproj.transform,
+                                            wgs_proj, aeqd_cen)
+            # mathematically, wgs_to_aeqd(Point(lon, lat)) == Point(0, 0);
+            # the latter is faster and more precise
+            cen_pt = Point(0,0)
+
+            # It is unacceptably costly to construct a shapely MultiPoint
+            # out of some locations with large regions (requires more than
+            # 32GB of scratch memory).  Instead, iterate over the points
+            # one at a time.
+            min_wdd = math.inf
+            rep_pt = None
+            for x, y, v in iter_csr_nonzero(self.probability):
+                lon = lons[x]
+                lat = lats[y]
+                cell = sh_transform(wgs_to_aeqd, Point(lon, lat))
+                dist = cen_pt.distance(cell)
+                wdd = dist*dist*v
+                if wdd < min_wdd:
+                    min_wdd = wdd
+                    rep_pt = [lon, lat]
+            if rep_pt is None:
+                rep_pt = cen
+            else:
+                rep_pt = np.array(rep_pt)
+            self._rep_pt = rep_pt
+        return self._rep_pt
 
     def distance_to_point(self, lon, lat):
         """Find the shortest geodesic distance from (lon, lat) to a nonzero

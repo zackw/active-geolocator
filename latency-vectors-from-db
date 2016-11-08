@@ -1,0 +1,223 @@
+#! /usr/bin/python3
+
+# usage: locate-from-db output-dir calibration basemap database \
+#                       [batch selector...]
+
+import argparse
+import collections
+import contextlib
+import csv
+import datetime
+import os
+import sys
+import time
+
+import psycopg2
+import psycopg2.extras
+
+from math import inf as Inf
+
+_time_0 = time.monotonic()
+def progress(message, *args):
+    global _time_0
+    sys.stderr.write(
+        ("{}: " + message + "\n").format(
+            datetime.timedelta(seconds = time.monotonic() - _time_0),
+            *args))
+
+def warning(message, *args):
+    sys.stderr.write(
+        ("\t*** " + message + "\n").format(*args))
+
+def get_batch_list(db, selector):
+    cur = db.cursor()
+    query = ("SELECT b.id, COUNT(*) FROM batches b, measurements m "
+             "WHERE b.id = m.batch AND m.rtt > 0")
+    if selector:
+        query += "AND (" + selector + ") "
+    query += "GROUP BY b.id;"
+    cur.execute(query)
+    batches = []
+    for row in cur:
+        if row[1] > 0:
+            batches.append(row[0])
+
+    progress("{} non-empty batches selected.", len(batches))
+    return batches
+
+def retrieve_batch(db, batchid):
+
+    def router_for_addr(addr):
+        return addr[:addr.rfind('.')] + '.1'
+
+    cur = db.cursor(cursor_factory=psycopg2.extras.DictCursor)
+    cur.execute("""
+        SELECT b.id, b.client_lat, b.client_lon, b.client_addr,
+               c.label, c.country, c.asn,
+               b.proxied, b.proxy_lat, b.proxy_lon, b.proxy_addr,
+               p.label, p.country, p.asn,
+               b.annot->>'proxy_label' as proxy_label,
+               b.annot->>'proxy_provider' as proxy_provider,
+               b.annot->>'proxy_alleged_cc2' as proxy_alleged_cc2
+          FROM batches b
+     LEFT JOIN hosts c ON b.client_addr = c.ipv4
+     LEFT JOIN hosts p ON b.proxy_addr  = p.ipv4
+         WHERE b.id = %s""", (batchid,))
+
+    # Copy the metadata into a normal dictionary to avoid problems later.
+    metadata_raw = cur.fetchone()
+    metadata = {}
+    metadata.update(metadata_raw)
+
+    # We don't need a fancy cursor for the next steps.
+    cur = db.cursor()
+
+    # There's only ever one source for any given batch (and it is
+    # always equal to either client_addr or proxy_addr for that
+    # batch).  Throw out all measurements that didn't come back with
+    # either errno 0 or 111 (that is, success and ECONNREFUSED).  Also
+    # throw out RTT zero, which tends to make the calibration choke.
+    # And finally throw out the client and proxy address and
+    # 127.0.0.1, which will have anomalously short RTTs (since they
+    # never hit the network).
+    cur.execute("""
+        SELECT dst, rtt FROM measurements
+         WHERE batch = %s AND rtt > 0
+           AND status IN (0, 111)
+           AND dst NOT IN ('127.0.0.1', %s, %s)
+         """, (batchid, metadata['client_addr'], metadata['proxy_addr']))
+    measurements = collections.defaultdict(list)
+    for dst, rtt in cur:
+        if 0 <= rtt < 5000:
+            measurements[dst].append(rtt)
+        else:
+            warning("out of range: {} -> {}: {}", batchid, dst, rtt)
+
+    if not metadata['proxied']:
+        metadata['addr'] = metadata['client_addr']
+
+    else:
+        metadata['addr'] = metadata['proxy_addr']
+
+        # We need to determine and subtract off the travel time _to_
+        # the proxy.
+        # There are three ways to do this, in decreasing order of
+        # accuracy.  Ideally, we have a measurement of the RTT to the
+        # proxy's own router.
+        router = router_for_addr(metadata['proxy_addr'])
+        if router in measurements:
+            adjustment = min(measurements[router]) - 5
+            metadata['proxy_rtt_estimation_method'] = 'router'
+            metadata['proxy_rtt_estimation_addr'] = router
+        else:
+            # The client itself may also have been a ping destination.
+            # We can't look it up by address, but we can look in the
+            # hosts table for the location.
+            cur.execute("""
+                select ipv4 from hosts
+                 where abs(latitude - %s) < 0.01
+                   and abs(longitude - %s) < 0.01
+            """, (metadata['client_lat'], metadata['client_lon']))
+
+            cdest = None
+            adjustment = Inf
+            for row in cur:
+                addr = row[0]
+                if addr in measurements:
+                    cadj = min(measurements[addr])
+                    if cadj < adjustment:
+                        cdest = addr
+                        adjustment = cadj
+
+            if cdest is not None:
+                # If we have a ping destination that is colocated with
+                # the client, then we can estimate the RTT to the proxy
+                # as half of the RTT through the proxy and back to the
+                # client's location, minus a small fudge factor.
+                adjustment = adjustment/2 - 5
+                metadata['proxy_rtt_estimation_method'] = 'there_and_back'
+                metadata['proxy_rtt_estimation_addr'] = cdest
+
+        # In no case allow the adjustment to be greater than the
+        # smallest available measurement minus five milliseconds, nor
+        # allow it to be negative.
+        cdest = None
+        clamp = Inf
+        for addr, meas in measurements.items():
+            mmeas = min(meas)
+            if mmeas < clamp:
+                clamp = mmeas
+                cdest = addr
+        if clamp - 5 < adjustment:
+            metadata['proxy_rtt_estimation_clamp'] = clamp
+            metadata['proxy_rtt_estimation_clamp_addr'] = cdest
+            if 'proxy_rtt_estimation_method' in metadata:
+                metadata['proxy_rtt_estimation_method'] += '_clamped'
+                metadata['proxy_rtt_estimation_unclamped'] = adjustment
+            else:
+                metadata['proxy_rtt_estimation_method'] = 'clamp'
+
+            adjustment = clamp - 5
+        adjustment = max(adjustment, 0)
+        metadata['estimated_proxy_rtt'] = adjustment
+
+        # This loop mutates measurements, so pull the keys up front.
+        for addr in list(measurements.keys()):
+            measurements[addr] = sorted(
+                max(0.1, m - adjustment)
+                for m in measurements[addr]
+            )
+
+    # convert to a normal dict for returning
+    return metadata, { k:v for k,v in measurements.items() }
+
+def latency_vector(measurements, addresses):
+    return [ min(measurements.get(addr, []), default="NA")
+             for addr in addresses ]
+
+def process(db, batch_selector):
+    batchlist = get_batch_list(db, batch_selector)
+    addrs = set()
+    clients = set()
+    batches = collections.defaultdict(dict)
+    progress("retrieving batches...")
+    for batchid in batchlist:
+        metadata, measurements = retrieve_batch(db, batchid)
+        client = (metadata['client_lat'], metadata['client_lon'])
+
+        clients.add(client)
+        addrs.update(measurements.keys())
+        batches[metadata['addr']][client] = (metadata, measurements)
+
+    clients = sorted(clients)
+    addrs = sorted(addrs, key = lambda addr: [int(x) for x in addr.split(".")])
+    hosts = sorted(batches.keys())
+
+    progress("emitting vectors...")
+    with sys.stdout as ofp:
+        wr = csv.writer(ofp, dialect='unix', quoting=csv.QUOTE_MINIMAL)
+
+        header = ["ip", "provider"]
+        for i in range(len(clients)):
+            for j in range(len(addrs)):
+                header.append("l%d.%d" % (i,j))
+
+        wr.writerow(header)
+
+        for h in hosts:
+            batch = batches[h]
+            v = [h, next(iter(batch.values()))[0].get('proxy_provider', '?')]
+            for c in clients:
+                v += latency_vector(batch.get(c, [None,{}])[1], addrs)
+            wr.writerow(v)
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("database")
+    ap.add_argument("batch_selector", nargs=argparse.REMAINDER)
+    args = ap.parse_args()
+
+    with contextlib.closing(psycopg2.connect(dbname=args.database)) as db:
+        process(db, " ".join(args.batch_selector))
+
+main()

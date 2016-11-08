@@ -1,0 +1,69 @@
+#! /usr/bin/python3
+
+"""Compute all pairs of distances between IP-to-location reports
+for the same IP address.  Outputs CSV file to stdout."""
+
+import argparse
+import collections
+import csv
+import sys
+
+import psycopg2
+import pyproj
+_WGS84dist = pyproj.Geod(ellps='WGS84').inv
+def WGS84dist(lon1, lat1, lon2, lat2):
+    _, _, dist = _WGS84dist(lon1, lat1, lon2, lat2)
+    return dist
+
+def process(db, provider):
+    cur = db.cursor()
+    cur.execute("""
+        SELECT ip, db, latitude, longitude FROM geoip
+         WHERE ip in (SELECT ip FROM geoip WHERE db = %s)
+         ORDER BY ip, db
+    """, (provider,))
+
+    data = collections.defaultdict(dict)
+    dbs = set()
+    for ip, db, lat, lon in cur:
+        db = sys.intern(db)
+        dbs.add(db)
+        data[ip][db] = (lon, lat)
+
+    dbs = sorted(dbs)
+    ndb = len(dbs)
+
+    with sys.stdout as ofp:
+        wr = csv.writer(ofp, dialect='unix', quoting=csv.QUOTE_MINIMAL)
+        wr.writerow(("ip", "db1", "lon", "lat", "db2", "distance"))
+        for ip, recs in data.items():
+            for i in range(ndb):
+                p = dbs[i]
+                try:
+                    a = recs[p]
+                except KeyError:
+                    continue
+                for j in range(i+1, ndb):
+                    q = dbs[j]
+                    try:
+                        b = recs[q]
+                    except KeyError:
+                        continue
+
+                    wr.writerow([ip, p, *a, q, WGS84dist(*a, *b)])
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument("database",
+                    help="Name of local database to process."
+                    " Any PostgreSQL connection string is acceptable.")
+    ap.add_argument("provider",
+                    help="Name of IP-to-location provider to select on."
+                    " All IP addresses that have an entry from this provider"
+                    " will be processed.")
+    args = ap.parse_args()
+
+    with psycopg2.connect(args.database) as db:
+        process(db, args.provider)
+
+main()

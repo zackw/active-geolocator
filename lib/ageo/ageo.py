@@ -275,7 +275,8 @@ class Location:
                 lat = lats[y]
                 cell = sh_transform(wgs_to_aeqd, Point(lon, lat))
                 dist = cen_pt.distance(cell)
-                wdd = dist*dist*v
+                # we want the minimum distance but the maximum probability
+                wdd = dist*dist*(1-v)
                 if wdd < min_wdd:
                     min_wdd = wdd
                     rep_pt = [lon, lat]

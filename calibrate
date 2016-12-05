@@ -253,6 +253,7 @@ def crunch_obs_1(odir, positions, distances, basemap,
     loc = obsv[0]
     for obs in obsv[1:]:
         loc = loc.intersection(obs, bnd)
+    loc = loc.intersection(basemap, bnd)
 
     loc.save(os.path.join(odir, tag + "-" + str(did) + ".h5"))
     return tag, did

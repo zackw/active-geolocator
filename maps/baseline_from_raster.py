@@ -83,10 +83,14 @@ class GeographicMatrix:
         rasterio.warp.reproject(
             rasterio.band(args.raster, 1),
             mtx,
-            dst_transform = rasterio.transform.from_bounds(west, south, east, north,
-                                                           n_lon, n_lat),
+            src_transform = args.raster.affine,
+            src_crs       = args.raster.crs,
             dst_crs       = rasterio.crs.CRS({
-                'proj': 'longlat', 'ellps': 'WGS84', 'datum': 'WGS84', 'no_defs': True}),
+                'proj': 'longlat', 'ellps': 'WGS84', 'datum': 'WGS84',
+                'no_defs': True}),
+            dst_transform = rasterio.transform.from_bounds(
+                west, south, east, north,
+                n_lon, n_lat),
             dst_nodata    = 0,
             resampling    = rasterio.warp.Resampling.cubic)
 
@@ -94,7 +98,9 @@ class GeographicMatrix:
         mtx  = np.log1p(mtx)
         mtx -= np.amin(mtx)
         mtx /= np.amax(mtx)
-        self.mtx = mtx
+
+        # For no reason that I can find, 'mtx' will come out upside down.
+        self.mtx = np.flipud(mtx)
 
     def write_to(self, fname):
         with tables.open_file(fname, 'w') as f:

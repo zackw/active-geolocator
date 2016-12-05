@@ -246,11 +246,10 @@ class Location:
         return self._area
 
     @property
-    def rep_pt(self):
+    def rep_pt(self, epsilon=1e-8):
         """Representative point of the nonzero region of the probability
-           matrix.  This is the point, within the nonzero region,
-           whose _weighted_ squared geodesic distance to the centroid
-           is minimized.
+           matrix.  This is, of all points with the greatest probability,
+           the one closest to the centroid.
         """
         if self._rep_pt is None:
             lons = self.longitudes
@@ -265,21 +264,24 @@ class Location:
             cen_pt = Point(0,0)
 
             # It is unacceptably costly to construct a shapely MultiPoint
-            # out of some locations with large regions (requires more than
+            # out of some locations with large regions (can require more than
             # 32GB of scratch memory).  Instead, iterate over the points
             # one at a time.
-            min_wdd = math.inf
+            max_prob = 0
+            min_dist = math.inf
             rep_pt = None
             for x, y, v in iter_csr_nonzero(self.probability):
                 lon = lons[x]
                 lat = lats[y]
-                cell = sh_transform(wgs_to_aeqd, Point(lon, lat))
-                dist = cen_pt.distance(cell)
-                # we want the minimum distance but the maximum probability
-                wdd = dist*dist*(1-v)
-                if wdd < min_wdd:
-                    min_wdd = wdd
-                    rep_pt = [lon, lat]
+                if rep_pt is None or v > max_prob - epsilon:
+                    dist = WGS84dist(cen[0], cen[1], lon, lat)
+                    # v < max_prob has already been excluded
+                    if (rep_pt is None or v > max_prob or
+                        (v > max_prob - epsilon and dist < min_dist)):
+                        rep_pt = [lon, lat]
+                        max_prob = max(max_prob, v)
+                        min_dist = dist
+
             if rep_pt is None:
                 rep_pt = cen
             else:

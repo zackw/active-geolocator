@@ -116,9 +116,9 @@ def load_measurements(fname, measurements, cache_ts, positions, already):
         return True
 
 def load_raw_data(mdir):
-    positions_f = mdir + '/ripe-atlas-anchors.csv'
-    pingtimes_g = mdir + '/ripe-atlas-anchor-pingtimes-*.csv'
-    cache_f     = mdir + '/ripe-atlas-cache.pickle.gz'
+    positions_f = mdir + '/anchor-index.csv'
+    pingtimes_g = mdir + '/pingtimes-*.csv'
+    cache_f     = mdir + '/cache.pickle.gz'
 
     try:
         progress("Loading measurement cache...")
@@ -207,7 +207,7 @@ def make_calibrations(measurements, distances, pool):
     return cbg, octant, spotter
 
 def cached_make_calibrations(measurements, distances, pool, mdir, mcache_ts):
-    cal_cache_f = mdir + "/ripe-atlas-calibration.pickle"
+    cal_cache_f = mdir + "/calibration.pickle"
     try:
         progress("Loading calibration cache...")
         with gzip.open(cal_cache_f, "rb") as calcache:

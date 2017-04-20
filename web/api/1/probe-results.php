@@ -48,5 +48,6 @@ $rv = proc_close($proc);
 assert($rv === 0);
 chmod($bfile, 0640);
 
-http_response_code(204);
+    header("Content-Type: application/json;charset=utf-8");
+    echo json_encode(["ccode" => substr(basename($bfile), 4)]);
 ?>

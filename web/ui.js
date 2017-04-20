@@ -54,7 +54,7 @@
             // than 5 or more than 10.
             parallel: 5,
             // Connection timeout (milliseconds)
-            timeout: 1000,
+            timeout: 10000,
             // Number of times to probe each landmark
             n_probes: 5,
 
@@ -684,6 +684,15 @@
         return response.json();
     }
 
+    function fetch_maybe_decode_json (response) {
+        fetch_assert_ok(response);
+        if (response.status === 204) {
+            return Promise.resolve({});
+        } else {
+            return response.json();
+        }
+    }
+
     function get_geoip_location () {
         return fetch(config.geoip_url, {mode: "cors"})
             .then(fetch_decode_json)
@@ -943,10 +952,18 @@
         fetch(config.results_url, {
             method: "POST",
             body: form
-        }).then(function (resp) {
-            fetch_assert_ok(resp);
+        })
+        .then(fetch_maybe_decode_json)
+        .then(function (data) {
+            var ccode = data["ccode"] || "";
+            if (ccode !== "") {
+                document.getElementById("ccode-box")
+                    .appendChild(document.createTextNode(ccode));
+                show_id("ccode-para");
+            }
             hide_id("sending_message");
             show_id("completion_message");
+
         }).catch(function (e) {
             var errorbox = document.getElementById("send_error_message");
             console.error("error posting results:", e);

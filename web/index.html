@@ -67,10 +67,13 @@
         <option value="nautical">nautical mile</option>
         <option value="metric" selected>metric</option>
       </select>
-      <span id="map_key" class="gl_b_or_f hide">Locations:
-        <span class="gl_b hide"><img src="map_pin_user.png"> Browser</span>
-        <span class="gl_f hide"><img src="map_pin_proxy.png">
-          freegeoip</span></span>
+      <table id="map_key" class="gl_b_or_f hide">
+        <thead><tr><th colspan="2">Your location for comparison</th></tr></thead>
+        <tbody>
+          <tr class="gl_b hide"><td><img src="map_pin_user.png"></td><td>From your browser</td></tr>
+          <tr class="gl_f hide"><td><img src="map_pin_proxy.png"></td><td>From freegeoip.net</td></tr>
+        </tbody>
+      </table>
     </div>
     <div class="text_container">
       <div id="browser_ok" class="hide">
@@ -268,6 +271,7 @@
           <div id="send_error_message"
                class="error_message message hide"></div>
           <div id="completion_message" class="hide">
+            <p id="ccode-para" class="hide"><strong>Confirmation code: <span id="ccode-box"></span></strong></p>
             <p>Data transmitted.  Thank you for your help.</p>
             <p>If you have access to other computers in different
               cities, we encourage you to run this measurement on all

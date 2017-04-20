@@ -15,6 +15,7 @@ import gzip
 import multiprocessing
 import pickle
 import pickletools
+import random
 import shlex
 import time
 
@@ -44,6 +45,22 @@ def WGS84daz(lon1, lat1, lon2, lat2):
     az, _, dist = _WGS84dist(lon1, lat1, lon2, lat2)
     return dist, az
 
+DESIRED_SAMPLES = 200
+def update_sample(sample, count, obs):
+    n = len(sample)
+    if n < DESIRED_SAMPLES:
+        sample.append(obs)
+        return
+    lo = min(sample)
+    hi = max(sample)
+    if obs < lo or obs > hi or random.random() < DESIRED_SAMPLES/(count+1):
+        lo = min(obs, lo)
+        hi = max(obs, hi)
+        replace = random.randint(0, n-1)
+        while sample[replace] <= lo or sample[replace] >= hi:
+            replace = random.randint(0, n-1)
+        sample[replace] = obs
+
 TruePosition = collections.namedtuple("TruePosition",
                                       ("lat", "lon", "ipv4", "asn", "cc"))
 
@@ -55,6 +72,13 @@ def load_true_positions(fname, positions, cache_ts):
 
         positions.clear()
         rd = csv.DictReader(fp)
+        if 'id' in rd.fieldnames:
+            idf = 'id'
+        elif 'pid' in rd.fieldnames:
+            idf = 'pid'
+        else:
+            raise RuntimeError("{}: can't find id column among {!r}"
+                               .format(fname, rd.fieldnames))
         for row in rd:
             pos = TruePosition(
                 float(row['latitude']), float(row['longitude']),
@@ -63,12 +87,12 @@ def load_true_positions(fname, positions, cache_ts):
             # sanity check
             if not (-90 <= pos.lat < 90) or not (-180 < pos.lon < 180):
                 warning("{} ({}): position off globe: {}, {}",
-                        row['id'], pos.ipv4, pos.lat, pos.lon)
+                        row[idf], pos.ipv4, pos.lat, pos.lon)
             elif (-1 < pos.lat < 1) and (-1 < pos.lon < 1):
                 warning("{} ({}): null island: {}, {}",
-                        row['id'], pos.ipv4, pos.lat, pos.lon)
+                        row[idf], pos.ipv4, pos.lat, pos.lon)
             else:
-                positions[int(row['id'])] = pos
+                positions[int(row[idf])] = pos
 
         return True
 
@@ -81,7 +105,8 @@ def compute_true_distances(positions):
                                             spos.lon, spos.lat)
     return distances
 
-def load_measurements(fname, measurements, cache_ts, positions, already):
+def load_measurements(fname, measurements, counts,
+                      cache_ts, positions, already):
     with open(fname) as fp:
         if os.fstat(fp.fileno()).st_mtime < cache_ts:
             return False
@@ -109,9 +134,13 @@ def load_measurements(fname, measurements, cache_ts, positions, already):
 
             if d_id not in measurements:
                 measurements[d_id] = {}
+                counts[d_id] = {}
             if s_id not in measurements[d_id]:
                 measurements[d_id][s_id] = []
-            measurements[d_id][s_id].append(float(row['rtt']))
+                counts[d_id][s_id] = 0
+
+            update_sample(measurements[d_id][s_id], counts[d_id][s_id], rtt)
+            counts[d_id][s_id] += 1
 
         return True
 
@@ -123,7 +152,7 @@ def load_raw_data(mdir):
     try:
         progress("Loading measurement cache...")
         with gzip.open(cache_f, "rb") as mcache:
-            positions, distances, measurements = pickle.load(mcache)
+            positions, distances, measurements, counts = pickle.load(mcache)
             cache_ts = os.fstat(mcache.fileno()).st_mtime
             cache_dirty = False
 
@@ -132,6 +161,7 @@ def load_raw_data(mdir):
         positions = {}
         distances = None
         measurements = {}
+        counts = {}
         cache_ts = 0
         cache_dirty = True
 
@@ -145,8 +175,8 @@ def load_raw_data(mdir):
     progress("Loading measurements...")
     already = set()
     for f in glob.glob(pingtimes_g):
-        cache_dirty |= load_measurements(f, measurements, cache_ts,
-                                         positions, already)
+        cache_dirty |= load_measurements(f, measurements, counts,
+                                         cache_ts, positions, already)
 
     if cache_dirty:
         progress("Updating measurement cache...")
@@ -154,7 +184,7 @@ def load_raw_data(mdir):
             mcache.write(
                 pickletools.optimize(
                     pickle.dumps(
-                        (positions, distances, measurements),
+                        (positions, distances, measurements, counts),
                         pickle.HIGHEST_PROTOCOL)))
 
     return positions, distances, measurements, cache_ts
@@ -236,7 +266,9 @@ def crunch_obs_1(odir, positions, distances, basemap,
     bnd = basemap.bounds
     obsv = []
     for sid, rtts in srcs.items():
-        if sid == did or sid not in cals or sid not in positions:
+        if (sid == did
+            or sid not in cals or sid not in positions
+            or len(rtts) < 2):
             continue
         spos = positions[sid]
         obs = ageo.Observation(
@@ -284,6 +316,7 @@ def main():
         ]
 
         progress("Crunching observations...")
+        os.makedirs(sys.argv[3], exist_ok=True)
         for tag, did in pool.imap_unordered(
                 call_crunch_obs_1,
                 ((sys.argv[3], positions, distances, basemap,

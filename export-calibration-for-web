@@ -1,0 +1,69 @@
+#! /usr/bin/python3
+
+# usage: anchor-index.csv calibration.pickle > csv-cal-for-web.csv
+
+# This is necessary because pickle.load() will need to create calibration
+# curve objects.
+import os
+import sys
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "lib")))
+
+import collections
+import csv
+import gzip
+import pickle
+
+TruePosition = collections.namedtuple("TruePosition",
+                                      ("lat", "lon", "ipv4", "asn", "cc"))
+
+def load_true_positions(fname):
+    with open(fname, "rt") as fp:
+        rd = csv.DictReader(fp)
+        if "id" in rd.fieldnames:
+            idf = "id"
+        elif "pid" in rd.fieldnames:
+            idf = "pid"
+        else:
+            raise RuntimeError("{}: can't find id column among {!r}"
+                               .format(fname, rd.fieldnames))
+
+        positions = {}
+        for row in rd:
+            pos = TruePosition(
+                float(row["latitude"]), float(row["longitude"]),
+                row["address_v4"], row["asn_v4"], row["country_code"].lower())
+
+            # sanity check
+            if not (-90 <= pos.lat < 90) or not (-180 < pos.lon < 180):
+                warning("{} ({}): position off globe: {}, {}",
+                        row[idf], pos.ipv4, pos.lat, pos.lon)
+            elif (-1 < pos.lat < 1) and (-1 < pos.lon < 1):
+                warning("{} ({}): null island: {}, {}",
+                        row[idf], pos.ipv4, pos.lat, pos.lon)
+            else:
+                positions[int(row[idf])] = pos
+
+        return positions
+
+def load_pickled_cbg_calibrations(fname):
+    with gzip.open(fname, "rb") as fp:
+        cals = pickle.load(fp)
+
+    assert type(cals[0][0]).__name__ == "CBG"
+    return cals[0]
+
+def write_calibration_for_web(outf, positions, cals):
+    wr = csv.writer(outf, dialect='unix', quoting=csv.QUOTE_MINIMAL)
+    for id, cal in cals.items():
+        if id not in positions: continue
+        c = cal._curve['max']
+        p = positions[id]
+        wr.writerow((p.ipv4, 80, p.lat, p.lon, c.m + 0, c.b + 0))
+
+def main():
+    positions = load_true_positions(sys.argv[1])
+    cals = load_pickled_cbg_calibrations(sys.argv[2])
+    with sys.stdout as outf:
+        write_calibration_for_web(outf, positions, cals)
+
+main()

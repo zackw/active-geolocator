@@ -1,6 +1,7 @@
 #! /usr/bin/python3
 
-# usage: map measurement-dir output-dir
+# usage: measurement-dir output-dir > report.csv
+# (from a previous call to 'calibrate')
 
 import os
 import sys
@@ -40,6 +41,13 @@ def load_true_positions(fname):
     with open(fname) as fp:
         positions = {}
         rd = csv.DictReader(fp)
+        if 'id' in rd.fieldnames:
+            idf = 'id'
+        elif 'pid' in rd.fieldnames:
+            idf = 'pid'
+        else:
+            raise RuntimeError("{}: can't find id column among {!r}"
+                               .format(fname, rd.fieldnames))
         for row in rd:
             pos = TruePosition(
                 float(row['latitude']), float(row['longitude']),
@@ -48,12 +56,12 @@ def load_true_positions(fname):
             # sanity check
             if not (-90 <= pos.lat < 90) or not (-180 < pos.lon < 180):
                 warning("{} ({}): position off globe: {}, {}",
-                        row['id'], pos.ipv4, pos.lat, pos.lon)
+                        row[idf], pos.ipv4, pos.lat, pos.lon)
             elif (-1 < pos.lat < 1) and (-1 < pos.lon < 1):
                 warning("{} ({}): null island: {}, {}",
-                        row['id'], pos.ipv4, pos.lat, pos.lon)
+                        row[idf], pos.ipv4, pos.lat, pos.lon)
             else:
-                positions[int(row['id'])] = pos
+                positions[int(row[idf])] = pos
 
         return positions
 
@@ -115,7 +123,8 @@ def crunch_one(fname):
 def main():
     progress("loading...")
     global positions
-    positions = load_true_positions(sys.argv[1])
+    positions = load_true_positions(
+        os.path.join(sys.argv[1], 'anchor-index.csv'))
 
     with multiprocessing.Pool() as pool, \
          sys.stdout as outf:

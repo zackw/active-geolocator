@@ -1,0 +1,146 @@
+#! /usr/bin/python3
+
+# usage: locate-from-db output-dir calibration basemap pickle
+
+import argparse
+import collections
+import datetime
+import gzip
+import multiprocessing
+import os
+import pickle
+import sys
+import time
+import zlib
+from math import inf as Inf
+
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), 'lib')))
+import ageo
+
+_time_0 = time.monotonic()
+
+def progress(message, *args):
+    global _time_0
+    sys.stderr.write(
+        ("{}: " + message + "\n").format(
+            datetime.timedelta(seconds = time.monotonic() - _time_0),
+            *args))
+
+def warning(message, *args):
+    sys.stderr.write(
+        ("\t*** " + message + "\n").format(*args))
+
+def load_calibration(cfname):
+    try:
+        with gzip.open(cfname, "rb") as fp:
+            # FIXME: duplicates code from 'calibrate'
+            cal_cbg, cal_oct, cal_spo = pickle.load(fp)
+            minmax = ageo.ranging.MinMax
+            gaussn = ageo.ranging.Gaussian
+            return {
+                "cbg-m-1": (cal_cbg, minmax, False),
+                "oct-m-1": (cal_oct, minmax, False),
+                "spo-m-a": (cal_spo, minmax, True),
+                "spo-g-a": (cal_spo, gaussn, True)
+            }
+
+
+    except (OSError, zlib.error, pickle.UnpicklingError) as e:
+        sys.stderr.write("unable to load calibration: {}: {}\n"
+                         .format(cfname, e))
+        sys.exit(1)
+
+Position = collections.namedtuple("Position",
+                                  ("ipv4", "label", "ilabel", "lon", "lat"))
+
+# these are filled in in main()
+positions    = None
+basemap      = None
+calibrations = None
+
+def process_batch(args):
+    global positions, basemap
+    ofname, mode, metadata, measurements = args
+    cals, ranging, use_all = calibrations[mode]
+    bnd = basemap.bounds
+    obsv = []
+    for landmark, rtts in measurements.items():
+        if landmark not in positions:
+            continue
+        lpos = positions[landmark]
+        if use_all:
+            calibration = cals[0]
+        elif landmark in cals:
+            calibration = cals[landmark]
+        elif lpos.label in cals:
+            calibration = cals[lpos.label]
+        elif lpos.ilabel in cals:
+            calibration = cals[lpos.ilabel]
+        else:
+            continue
+
+        obs = ageo.Observation(
+            basemap=basemap,
+            ref_lat=lpos.lat,
+            ref_lon=lpos.lon,
+            range_fn=ranging,
+            calibration=calibration,
+            rtts=rtts)
+        obsv.append(obs)
+        bnd = bnd.intersection(obs.bounds)
+        if bnd.is_empty:
+            return mode + " (empty intersection region)", str(metadata['id'])
+
+    if not obsv:
+        return mode + " (no observations)", str(metadata['id'])
+
+    loc = obsv[0]
+    for obs in obsv[1:]:
+        loc = loc.intersection(obs, bnd)
+
+    #loc = loc.intersection(basemap, bnd)
+    loc.annotations.update(metadata)
+    loc.save(ofname)
+    return mode, metadata['id']
+
+def marshal_batches(args, rdr, modes):
+    try:
+        while True:
+            (_, (metadata, measurements)) = rdr.load()
+            for mode in modes:
+                ofname = os.path.join(args.output_dir,
+                                      mode + "-" + str(metadata['id']) + ".h5")
+                if not os.path.exists(ofname):
+                    yield (ofname, mode, metadata, measurements)
+    except EOFError:
+        return
+
+def main():
+    global positions, calibrations, basemap
+    ap = argparse.ArgumentParser()
+    ap.add_argument("output_dir")
+    ap.add_argument("calibration")
+    ap.add_argument("basemap")
+    ap.add_argument("pickle")
+    args = ap.parse_args()
+
+    progress("preparing...")
+
+    # FIXME: duplicates code from 'calibrate'
+    calibrations = load_calibration(args.calibration)
+    basemap = ageo.Map(args.basemap)
+
+    with gzip.open(args.pickle, "rb") as pf:
+        rdr = pickle.Unpickler(pf)
+
+        # The first item in the file is the batch list, which we don't need.
+        rdr.load()
+        positions = rdr.load()
+
+        with multiprocessing.Pool() as pool:
+            for tag, id in pool.imap_unordered(
+                    process_batch,
+                    marshal_batches(args, rdr, calibrations.keys())):
+                progress("{}: {}", id, tag)
+
+main()

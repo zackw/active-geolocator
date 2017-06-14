@@ -1,0 +1,236 @@
+#! /usr/bin/python3
+
+# usage: export-batch-from-db batch.pickle.gz database [batch selector...]
+
+import argparse
+import collections
+import contextlib
+import datetime
+import pickle
+import gzip
+import sys
+import time
+
+import psycopg2
+import psycopg2.extras
+
+_time_0 = time.monotonic()
+def progress(message, *args):
+    global _time_0
+    sys.stderr.write(
+        ("{}: " + message + "\n").format(
+            datetime.timedelta(seconds = time.monotonic() - _time_0),
+            *args))
+
+_time_last_tick = None
+_time_last_m = None
+def tick(label, m, n):
+    global _time_last_tick
+    global _time_last_m
+    now = time.monotonic()
+    if   (_time_last_tick is None or
+          now - _time_last_tick >= 30 or
+          _time_last_m is None or
+          (m - _time_last_m) > n/10):
+        _time_last_tick = now
+        _time_last_m = m
+        progress("{} {} of {}".format(label, m, n))
+
+def warning(message, *args):
+    sys.stderr.write(
+        ("\t*** " + message + "\n").format(*args))
+
+def get_batch_list(db, selector):
+    cur = db.cursor()
+    query = ("SELECT b.id, COUNT(*) FROM batches b, measurements m "
+             "WHERE b.id = m.batch AND m.rtt > 0")
+    if selector:
+        query += "AND (" + selector + ") "
+    query += "GROUP BY b.id;"
+    cur.execute(query)
+    batches = []
+    for row in cur:
+        if row[1] > 0:
+            batches.append(row[0])
+
+    progress("{} non-empty batches selected.", len(batches))
+    return batches
+
+
+Position = collections.namedtuple("Position",
+                                  ("ipv4", "label", "ilabel", "lon", "lat"))
+def get_landmark_positions(db, batches):
+    cur = db.cursor()
+    cur.execute("SELECT DISTINCT h.ipv4, h.label, h.longitude, h.latitude"
+                "  FROM hosts h, measurements m"
+                " WHERE m.dst = h.ipv4"
+                "   AND m.batch = ANY(%s)",
+                (batches,))
+    rv = {}
+    for row in cur:
+        try:
+            ilabel = int(row[1].partition('-')[2])
+        except:
+            ilabel = -1
+        pos = Position(row[0], row[1], ilabel, row[2], row[3])
+        rv[row[0]] = pos
+
+    return rv
+
+def router_for_addr(addr):
+    return addr[:addr.rfind('.')] + '.1'
+
+def retrieve_batch(db, batchid):
+    cur = db.cursor(cursor_factory=psycopg2.extras.DictCursor)
+    cur.execute("""
+        SELECT b.id, b.client_lat, b.client_lon, b.client_addr,
+               c.label, c.country, c.asn,
+               b.proxied, b.proxy_lat, b.proxy_lon, b.proxy_addr,
+               p.label, p.country, p.asn,
+               b.annot->>'proxy_label' as proxy_label,
+               b.annot->>'proxy_provider' as proxy_provider,
+               b.annot->>'proxy_alleged_cc2' as proxy_alleged_cc2
+          FROM batches b
+     LEFT JOIN hosts c ON b.client_addr = c.ipv4
+     LEFT JOIN hosts p ON b.proxy_addr  = p.ipv4
+         WHERE b.id = %s""", (batchid,))
+
+    # Copy the metadata into a normal dictionary to avoid problems later
+    # when it gets stuffed into a Location annotation.
+    metadata_raw = cur.fetchone()
+    metadata = {}
+    metadata.update(metadata_raw)
+
+    # We don't need a fancy cursor for the next steps.
+    cur = db.cursor()
+
+    # There's only ever one source for any given batch (and it is
+    # always equal to either client_addr or proxy_addr for that
+    # batch).  Throw out all measurements that didn't come back with
+    # either errno 0 or 111 (that is, success and ECONNREFUSED).  Also
+    # throw out RTT zero, which tends to make the calibration choke.
+    # And finally throw out the client and proxy address and
+    # 127.0.0.1, which will have anomalously short RTTs (since they
+    # never hit the network).
+    cur.execute("""
+        SELECT dst, rtt FROM measurements
+         WHERE batch = %s AND rtt > 0
+           AND status IN (0, 111)
+           AND dst NOT IN ('127.0.0.1', %s, %s)
+         """, (batchid, metadata['client_addr'], metadata['proxy_addr']))
+    measurements = collections.defaultdict(list)
+    for dst, rtt in cur:
+        if 0 <= rtt < 5000:
+            measurements[dst].append(rtt)
+        else:
+            warning("out of range: {} -> {}: {}", batchid, dst, rtt)
+
+    if metadata['proxied']:
+        # We need to determine and subtract off the travel time _to_
+        # the proxy.
+        # There are three ways to do this, in decreasing order of
+        # accuracy.  Ideally, we have a measurement of the RTT to the
+        # proxy's own router.
+        router = router_for_addr(metadata['proxy_addr'])
+        if router in measurements:
+            adjustment = min(measurements[router]) - 5
+            metadata['proxy_rtt_estimation_method'] = 'router'
+            metadata['proxy_rtt_estimation_addr'] = router
+        else:
+            # The client itself may also have been a ping destination.
+            # We can't look it up by address, but we can look in the
+            # hosts table for the location.
+            cur.execute("""
+                select ipv4 from hosts
+                 where abs(latitude - %s) < 0.01
+                   and abs(longitude - %s) < 0.01
+            """, (metadata['client_lat'], metadata['client_lon']))
+
+            cdest = None
+            adjustment = Inf
+            for row in cur:
+                addr = row[0]
+                if addr in measurements:
+                    cadj = min(measurements[addr])
+                    if cadj < adjustment:
+                        cdest = addr
+                        adjustment = cadj
+
+            if cdest is not None:
+                # If we have a ping destination that is colocated with
+                # the client, then we can estimate the RTT to the proxy
+                # as half of the RTT through the proxy and back to the
+                # client's location, minus a small fudge factor.
+                adjustment = adjustment/2 - 5
+                metadata['proxy_rtt_estimation_method'] = 'there_and_back'
+                metadata['proxy_rtt_estimation_addr'] = cdest
+
+        # In no case allow the adjustment to be greater than the
+        # smallest available measurement minus five milliseconds, nor
+        # allow it to be negative.
+        cdest = None
+        clamp = Inf
+        for addr, meas in measurements.items():
+            mmeas = min(meas)
+            if mmeas < clamp:
+                clamp = mmeas
+                cdest = addr
+        if clamp - 5 < adjustment:
+            metadata['proxy_rtt_estimation_clamp'] = clamp
+            metadata['proxy_rtt_estimation_clamp_addr'] = cdest
+            if 'proxy_rtt_estimation_method' in metadata:
+                metadata['proxy_rtt_estimation_method'] += '_clamped'
+                metadata['proxy_rtt_estimation_unclamped'] = adjustment
+            else:
+                metadata['proxy_rtt_estimation_method'] = 'clamp'
+
+            adjustment = clamp - 5
+        adjustment = max(adjustment, 0)
+        metadata['estimated_proxy_rtt'] = adjustment
+
+        # This loop mutates measurements, so pull the keys up front.
+        for addr in list(measurements.keys()):
+            measurements[addr] = sorted(
+                max(0.1, m - adjustment)
+                for m in measurements[addr]
+            )
+
+        progress("{}: adjust by {} (method {})",
+                 metadata['id'], adjustment,
+                 metadata['proxy_rtt_estimation_method'])
+
+    # convert to a normal dict for returning
+    return metadata, { k:v for k,v in measurements.items() }
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("output", metavar="batch.pickle.gz")
+    ap.add_argument("database")
+    ap.add_argument("batch_selector", nargs=argparse.REMAINDER)
+    args = ap.parse_args()
+
+    args.batch_selector = " ".join(args.batch_selector)
+
+    with contextlib.closing(psycopg2.connect(dbname=args.database)) as db:
+        progress("getting batch list...")
+        batches = get_batch_list(db, args.batch_selector)
+        progress("getting positions...")
+        positions = get_landmark_positions(db, batches)
+
+        with gzip.open(args.output, "wb") as f:
+            writer = pickle.Pickler(f, protocol=pickle.HIGHEST_PROTOCOL)
+            writer.dump(batches)
+            writer.dump(positions)
+
+            m = 0
+            n = len(batches)
+            for batchid in batches:
+                tick("writing batch", m, n)
+                writer.dump((batchid, retrieve_batch(db, batchid)))
+                m += 1
+
+            progress("wrote batch {} of {}", m, n)
+
+    progress("done.")
+
+main()

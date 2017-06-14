@@ -117,9 +117,6 @@ def probability_each_region(loc, regions):
         if avec[i]:
             avec[i] /= regions_by_serial[i].area
 
-    atot = avec.sum()
-    if atot != 1: avec /= atot
-
     pvec *= avec
     pvec /= pvec.sum()
     return pvec
@@ -143,17 +140,21 @@ def crunch_location(lname):
                                      # elements in reverse order
     if a_cc2 in regions:
         itrue = regions[a_cc2].serial
+        ptrue = pvec[itrue]
         if any(itop5 == itrue):
             pass
         else:
             itop5 = np.append(itop5, [itrue])
+    else:
+        ptrue = "<lacuna>"
 
     ptop5 = pvec[itop5]
     rtop5 = [regions_by_serial[i] for i in itop5]
 
-    return [
+    return client_id, a_cc2, ptrue, [
         (client_id, batch_id, provider, a_cc2, rtop5[i].cc2, ptop5[i])
         for i in range(len(rtop5))
+        if ptop5[i] > 0
     ]
 
 _time_0 = time.monotonic()
@@ -177,14 +178,13 @@ def main():
                       key = lambda f: (os.stat(f).st_size, f))
         n_todo = len(todo)
         n = 0
-        for result in pool.imap_unordered(crunch_location, todo):
+        for ci, ac, pt, result in pool.imap_unordered(crunch_location, todo):
             for row in result:
                 wr.writerow(row)
             ofp.flush()
 
             n += 1
-            progress("{}/{}: {} -> {}/{}",
-                     n, n_todo, result[0][0], result[0][2], result[0][3])
+            progress("{}/{}: {} -> {}/{}", n, n_todo, ci, ac, pt)
     progress("done")
 
 main()

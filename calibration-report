@@ -1,6 +1,7 @@
 #! /usr/bin/python3
 
-# usage: map measurement-dir output-dir
+# usage: measurement-dir output-dir > report.csv
+# (from a previous call to 'calibrate')
 
 import os
 import sys
@@ -40,6 +41,13 @@ def load_true_positions(fname):
     with open(fname) as fp:
         positions = {}
         rd = csv.DictReader(fp)
+        if 'id' in rd.fieldnames:
+            idf = 'id'
+        elif 'pid' in rd.fieldnames:
+            idf = 'pid'
+        else:
+            raise RuntimeError("{}: can't find id column among {!r}"
+                               .format(fname, rd.fieldnames))
         for row in rd:
             pos = TruePosition(
                 float(row['latitude']), float(row['longitude']),
@@ -48,12 +56,12 @@ def load_true_positions(fname):
             # sanity check
             if not (-90 <= pos.lat < 90) or not (-180 < pos.lon < 180):
                 warning("{} ({}): position off globe: {}, {}",
-                        row['id'], pos.ipv4, pos.lat, pos.lon)
+                        row[idf], pos.ipv4, pos.lat, pos.lon)
             elif (-1 < pos.lat < 1) and (-1 < pos.lon < 1):
                 warning("{} ({}): null island: {}, {}",
-                        row['id'], pos.ipv4, pos.lat, pos.lon)
+                        row[idf], pos.ipv4, pos.lat, pos.lon)
             else:
-                positions[int(row['id'])] = pos
+                positions[int(row[idf])] = pos
 
         return positions
 
@@ -79,26 +87,9 @@ def decode_filename(fname):
 
     return int(tid), calg, cset
 
-# def compute_distance_and_azimuth(loc, tpos):
-#     tlon, tlat = tpos.lon, tpos.lat
-#     elon, elat = loc.centroid
-#     try:
-#         distance, azimuth = WGS84daz(elon, elat, tlon, tlat)
-#     except ValueError as e:
-#         raise ValueError("{} - elon={} elat={} tlon={} tlat={}"
-#                          .format(str(e), elon, elat, tlon, tlat)) from None
-#
-#     # azimuth is in degrees clockwise from north.
-#     # to convert to degrees counterclockwise from east, subtract from 90.
-#     # cos(pi/2 - theta) = sin(theta) and vice versa.
-#     azimuth_rad = azimuth * pi / 180
-#     dlon = sin(azimuth_rad) * distance
-#     dlat = cos(azimuth_rad) * distance
-#     return tlon, tlat, elon, elat, distance, azimuth, dlon, dlat
-
-def compute_distance_to_centroid(loc, tpos):
+def compute_distance_to_representative(loc, tpos):
     tlon, tlat = tpos.lon, tpos.lat
-    elon, elat = loc.centroid
+    elon, elat = loc.rep_pt
     try:
         distance, _ = WGS84daz(elon, elat, tlon, tlat)
     except ValueError as e:
@@ -117,8 +108,8 @@ def crunch_one(fname):
 
     loc = ageo.Location.load(fname)
     try:
-        tlon, tlat, elon, elat, d_centroid = \
-            compute_distance_to_centroid(loc, positions[landmark])
+        tlon, tlat, elon, elat, d_rep = \
+            compute_distance_to_representative(loc, positions[landmark])
     except ValueError as e:
         warning("{}: {}", fname, e)
         return None
@@ -127,30 +118,34 @@ def crunch_one(fname):
     d_boundary = loc.distance_to_point(tlon, tlat)
     return (calg, cset, landmark,
             tlon, tlat, elon, elat,
-            d_boundary, d_centroid, area)
+            d_boundary, d_rep, area)
 
 def main():
     progress("loading...")
     global positions
-    positions = load_true_positions(sys.argv[1])
+    positions = load_true_positions(
+        os.path.join(sys.argv[1], 'anchor-index.csv'))
 
-    with sys.stdout as outf:
+    with multiprocessing.Pool() as pool, \
+         sys.stdout as outf:
         wr = csv.writer(outf, dialect='unix', quoting=csv.QUOTE_MINIMAL)
         wr.writerow((
             "c.alg", "c.set", "landmark",
             "t.lon", "t.lat", "e.lon", "e.lat",
-            "dist.boundary", "dist.centroid", "region.area"
+            "dist.boundary", "dist.representative", "region.area"
         ))
 
-        with multiprocessing.Pool() as pool:
-            for row in pool.imap_unordered(
-                    crunch_one,
-                    glob.glob(os.path.join(sys.argv[2], "*.h5"))):
-
-                if row is None:
-                    continue
-                progress("{}: {}/{}".format(row[2], row[0], row[1]))
-                wr.writerow(row)
+        todo = sorted(glob.glob(os.path.join(sys.argv[2], "*.h5")),
+                      key = lambda f: (os.stat(f).st_size, f))
+        n_todo = len(todo)
+        n = 0
+        for row in pool.imap_unordered(crunch_one, todo):
+            n += 1
+            if row is None:
+                continue
+            wr.writerow(row)
+            progress("{}/{}: {}: {}/{}".format(n, n_todo,
+                                               row[2], row[0], row[1]))
 
     progress("done")
 

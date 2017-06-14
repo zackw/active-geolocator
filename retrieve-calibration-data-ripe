@@ -1,0 +1,303 @@
+#! /usr/bin/python3
+
+import collections
+import csv
+import datetime
+import multiprocessing
+import numpy as np
+import os
+import pprint
+import random
+import sys
+import time
+import traceback
+from   urllib.parse import urljoin, urlencode
+
+import requests
+
+start = None
+def progress(msg):
+    now = time.monotonic()
+    global start
+    if start is None:
+        start = now
+    m, s = divmod(now - start, 60)
+    h, m = divmod(m, 60)
+    sys.stderr.write("{}:{:>02}:{:>05.2f}: {}\n".format(int(h), int(m), s, msg))
+
+# We must not create session objects before forking.  Instead each worker
+# calls this function, and it takes care of creating a session only once.
+_session = None
+def get_session():
+    global _session
+    if _session is None:
+        _session = requests.Session()
+        _session.headers = {
+            'User-Agent':'inter-anchor-rtt-retriever-1.0; zackw at cmu dot edu'
+        }
+    return _session
+
+# Similarly for random number generators.
+_rng = None
+def get_rng():
+    global _rng
+    if _rng is None:
+        _rng = random.Random()
+    return _rng
+
+BASE_URL = 'https://atlas.ripe.net/api/v2'
+ENOUGH_PINGTIMES = 500
+
+Anchor = collections.namedtuple('Anchor', (
+    'aid', 'pid', 'address_v4', 'asn_v4',
+    'latitude', 'longitude', 'country_code', 'city'
+    ))
+
+def retrieve_atlas(sess, query_url, *,
+                   constructor = lambda x: x,
+                   filter      = lambda x: True,
+                   params      = None):
+
+    if params:
+        query_url = urljoin(query_url, '?' + urlencode(params))
+    rv = []
+    while True:
+        resp = sess.get(query_url)
+        resp.raise_for_status()
+        blob = resp.json()
+
+        rv.extend(constructor(obj)
+                  for obj in blob["results"]
+                  if filter(obj))
+
+        next_url = blob.get("next")
+        if next_url is None:
+            return rv
+        query_url = urljoin(query_url, next_url)
+
+def anchor_from_v2_json(blob):
+    assert blob["geometry"]["type"] == "Point"
+    return Anchor(
+        aid = blob["id"],
+        pid = blob["probe"],
+        address_v4 = blob["ip_v4"],
+        asn_v4 = blob["as_v4"],
+        latitude = blob["geometry"]["coordinates"][1],
+        longitude = blob["geometry"]["coordinates"][0],
+        country_code = blob["country"],
+        city = blob["city"]
+    )
+
+def retrieve_anchor_list():
+    progress("retrieving anchor list...")
+    sess = get_session()
+    return retrieve_atlas(sess,
+                          BASE_URL + '/anchors/',
+                          constructor = anchor_from_v2_json)
+
+def write_anchor_list(anchors, fname):
+    progress("writing anchor list...")
+    with open(fname, "wt") as f:
+        wr = csv.writer(f, dialect='unix', quoting=csv.QUOTE_MINIMAL)
+        wr.writerow(Anchor._fields)
+        for anchor in sorted(anchors, key=lambda a:a.aid):
+            wr.writerow(anchor)
+
+def read_anchor_list(fname):
+    progress("reading anchor list...")
+    with open(fname, "rt") as f:
+        rd = csv.reader(f)
+        headers = next(rd)
+        if not all(a == b for a, b in zip(headers, Anchor._fields)):
+            sys.stderr.write(
+                "anchor list fields mismatch:\n"
+                "expected: {}\n"
+                " in file: {}\n"
+                .format(" ".join(Anchor._fields), " ".join(headers)))
+            raise RuntimeError("anchor list fields mismatch")
+
+        return [
+            Anchor(
+                int(aid_),
+                int(pid_),
+                addr_,
+                int(asn_),
+                float(lat_),
+                float(long_),
+                cc_,
+                city_
+            )
+            for aid_, pid_, addr_, asn_, lat_, long_, cc_, city_ in rd
+        ]
+
+def retrieve_anchor_ping_measurements(anchor_aids):
+    progress("retrieving and filtering anchor measurement list...")
+    sess = get_session()
+    measurements = collections.defaultdict(list)
+    for ping in retrieve_atlas(sess,
+                               BASE_URL + '/anchor-measurements/',
+                               constructor = lambda obj: obj,
+                               filter = lambda obj: obj['type'] == 'ping'):
+        target = int(ping['target'].split('/')[-1])
+        if target in anchor_aids:
+            measurements[target].append(ping['measurement'])
+    return measurements
+
+
+def ensure_anchor_list(fname):
+    try:
+        anchors = read_anchor_list(fname)
+    except FileNotFoundError:
+        anchors = retrieve_anchor_list()
+        write_anchor_list(anchors, fname)
+
+    n_anchors = len(anchors)
+    anchor_aids = frozenset(a.aid for a in anchors)
+    anchor_pids = frozenset(a.pid for a in anchors)
+    measurements = retrieve_anchor_ping_measurements(anchor_aids)
+
+    return (anchors, n_anchors, anchor_aids, anchor_pids, measurements)
+
+def retrieve_measurement(fname, meas_url, anchor, start_time,
+                         counts, todo, sess, i, n_anchors):
+    meas_id = meas_url.split('/')[-1]
+    progress("d{}/{} retrieving measurement {}".format(i, n_anchors, meas_id))
+
+    resp = sess.get(meas_url + '/results', params={
+        'start': start_time,
+        'probe_ids': ','.join(str(id) for id in sorted(todo))
+    })
+    resp.raise_for_status()
+    blob = resp.json()
+
+    def linearize(m):
+        for x in m.get('result', []):
+            n = x.get('rtt')
+            if n is not None:
+                yield n
+
+    def downsample(pingtimes):
+        pingtimes = np.fromiter(pingtimes, np.float)
+        pingtimes.sort()
+        if len(pingtimes) <= ENOUGH_PINGTIMES:
+            return pingtimes
+
+        # take all unique deciles
+        rv = np.unique(np.percentile(pingtimes, range(0, 101, 10),
+                                    interpolation='nearest'))
+
+        # delete those values from the list so they aren't oversampled
+        ind = np.searchsorted(pingtimes, rv)
+        pingtimes = np.delete(pingtimes,
+                              [ix for ix in ind if 0 <= ix < len(pingtimes)])
+
+        # take up to (ENOUGH_PINGTIMES-10) additional randomly selected values
+        rng = get_rng()
+        rv = list(rv)
+        rv.extend(rng.sample(list(pingtimes), ENOUGH_PINGTIMES-10))
+        rv.sort()
+        return rv
+
+    progress("d{}/{} writing RTTs for measurement {}"
+             .format(i, n_anchors, meas_id))
+    d_id = anchor.pid
+    with open(fname, "at") as f:
+        wr = csv.writer(f, dialect='unix', quoting=csv.QUOTE_MINIMAL)
+        for meas in blob:
+            s_id = meas['prb_id']
+            count = 0
+            for k, n in enumerate(downsample(linearize(meas))):
+                wr.writerow((d_id, s_id, k, n))
+                count += 1
+            counts[s_id] += count
+            if counts[s_id] >= ENOUGH_PINGTIMES:
+                todo.discard(s_id)
+
+    progress("d{}/{}: {} sources still need more pings."
+             .format(i, n_anchors, len(todo)))
+
+def count_pingtimes(i, n, daddr, fname, counts):
+    progress("d{}/{}: counting work already done for {}..."
+             .format(i, n, daddr))
+
+    fieldnames = ("d.id", "s.id", "k", "rtt")
+    try:
+        with open(fname, "rt") as f:
+            rd = csv.reader(f)
+            headers = next(rd)
+            if not all(a == b for a, b in zip(headers, fieldnames)):
+                sys.stderr.write(
+                    "pingtimes fields mismatch:\n"
+                    "expected: {}\n"
+                    " in file: {}\n"
+                    .format(" ".join(fieldnames), " ".join(headers)))
+                raise RuntimeError("pingtimes fields mismatch")
+
+            for d_id, s_id, k, rtt in rd:
+                counts[int(s_id)] += 1
+
+    except FileNotFoundError:
+        with open(fname, "wt") as f:
+            wr = csv.writer(f, dialect='unix', quoting=csv.QUOTE_MINIMAL)
+            wr.writerow(fieldnames)
+
+
+def ensure_pingtimes_to(dst, measurements, i, n, anchor_pids,
+                        start_time, work_dir):
+
+    fname = os.path.join(work_dir, 'pingtimes-{}.csv'.format(dst.address_v4))
+
+    counts = { s: 0 for s in anchor_pids }
+    count_pingtimes(i, n, dst.address_v4, fname, counts)
+    todo = set(s_id for s_id, n in counts.items() if n < ENOUGH_PINGTIMES)
+
+    progress("d{}/{}: {} sources need more pings.".format(i, n, len(todo)))
+    if not todo:
+        return
+
+    progress("d{}/{} {} measurements for {}"
+             .format(i, n, len(measurements), dst.address_v4))
+
+    sess = get_session()
+    for meas in measurements:
+        retrieve_measurement(fname, meas, dst, start_time,
+                             counts, todo, sess, i, n)
+        if not todo:
+            break
+
+def main():
+    progress("starting up...")
+
+    pool = multiprocessing.Pool()
+
+    work_dir = "ripe-anchors-" + datetime.date.today().isoformat()
+    os.makedirs(work_dir, exist_ok=True)
+
+    start_time = int(datetime.datetime.utcfromtimestamp(
+        time.time() - 7 * 24 * 60 * 60).replace(
+            hour=0,minute=0,second=0,microsecond=0).timestamp())
+
+    (anchors, n_anchors, anchor_aids, anchor_pids, measurements) = \
+        pool.apply(ensure_anchor_list,
+                   (os.path.join(work_dir, 'anchor-index.csv'),))
+
+    # In parallel, retrieve pingtimes to each anchor from all other anchors.
+    # The workers write directly to disk and return nothing.
+    # The retry loop is because this has a nasty tendency to run for ~20min
+    # and then fall over on a transient DNS glitch.
+    while True:
+        try:
+            pool.starmap(ensure_pingtimes_to,
+                         ((a, measurements[a.aid], i+1, n_anchors,
+                           anchor_pids, start_time, work_dir)
+                          for i, a in enumerate(anchors)))
+            break
+        except IOError:
+            traceback.print_exc()
+            time.sleep(5)
+            progress("restarting...")
+
+    progress("done.")
+
+if __name__ == '__main__':
+    main()

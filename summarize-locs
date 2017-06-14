@@ -1,0 +1,67 @@
+#! /usr/bin/python3
+
+"""Extract summary information from all of the location matrices named
+on the command line.  Output is in CSV format and is written to stdout."""
+
+import os
+import sys
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "lib")))
+
+import ageo
+import argparse
+import collections
+import csv
+import datetime
+import glob
+import multiprocessing
+import time
+
+_time_0 = time.monotonic()
+def progress(message, *args):
+    global _time_0
+    sys.stderr.write(
+        ("{}: " + message + "\n").format(
+            datetime.timedelta(seconds = time.monotonic() - _time_0),
+            *args))
+
+def produce_summary_row(fname):
+    loc  = ageo.Location.load(fname)
+    cen  = loc.centroid
+    rep  = loc.rep_pt
+    area = loc.area
+    ann  = loc.annotations
+
+    if ann["proxied"]:
+        addr = ann["proxy_addr"]
+        epr  = ann["estimated_proxy_rtt"]
+        prov = ann["proxy_provider"]
+    else:
+        addr = ann["client_addr"]
+        epr  = 0
+        prov = "none"
+
+    return [addr, prov, epr, rep[0], rep[1], cen[0], cen[1], area]
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument("files", nargs="+",
+                    help=".h5-format location matrices to summarize.")
+    args = ap.parse_args()
+
+    with multiprocessing.Pool() as pool, sys.stdout as outf:
+        wr = csv.writer(outf, dialect="unix", quoting=csv.QUOTE_MINIMAL)
+        wr.writerow((
+            "ip", "provider", "epr",
+            "longitude", "latitude", "c.longitude", "c.latitude",
+            "area"))
+
+        n_todo = len(args.files)
+        n = 0
+        for row in pool.imap_unordered(produce_summary_row, args.files):
+            n += 1
+            if row[5] > 0:
+                wr.writerow(row)
+            progress("{}/{}: {}/{}: {:.4f},{:.4f}x{:.3f}".format(
+                n, n_todo, row[1], row[0], row[4], row[3], row[7]/(1000*1000)))
+
+main()

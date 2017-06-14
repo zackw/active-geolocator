@@ -1,0 +1,281 @@
+#! /usr/bin/python3
+
+"""Compute a dissimilarity (cosine distance) matrix between all of the
+location matrices in the directory named on the command line.  Output
+is in CSV format and is written to stdout."""
+
+import argparse
+import collections
+import csv
+import datetime
+import glob
+import multiprocessing
+import os
+import sys
+import time
+
+import numpy as np
+import tables
+
+class ProgressMonitor:
+    def __init__(self):
+        self.start_time    = time.monotonic()
+        self.last_message  = 0
+        self.jobsize       = None
+        self.completed     = None
+        self.avg_tick_time = None
+        self.last_tick     = None
+        self.log           = open("pm.log", "wt")
+
+    def __del__(self):
+        self.log.close()
+
+    def start_job(self, jobsize, label):
+        self.jobsize       = jobsize
+        self.completed     = 0
+        self.avg_tick_time = 0
+        self.last_tick     = time.monotonic()
+        self.message("{} {}", jobsize, label)
+
+    def message(self, msg, *args):
+        self.last_message = time.monotonic()
+        ts = datetime.timedelta(seconds = self.last_message - self.start_time)
+        sys.stderr.write(("{}: " + msg + "\n").format(ts, *args))
+
+    def tick(self):
+        now = time.monotonic()
+        elapsed = now - self.last_tick
+        self.avg_tick_time = (elapsed if self.avg_tick_time == 0
+                              else elapsed*0.05 + self.avg_tick_time*0.95)
+        self.completed += 1
+        self.last_tick = now
+        self.log.write("{},{},{}\n".format(now,elapsed,self.avg_tick_time))
+
+        if now - self.last_message >= 30 or self.completed >= self.jobsize:
+            remaining = self.jobsize - self.completed
+            est_rm = datetime.timedelta(seconds=self.avg_tick_time*remaining)
+            self.message("{}/{} complete, {} remaining",
+                         self.completed, self.jobsize, est_rm)
+
+def check_matching_grid(fi, fj):
+    ai = fi.root.location.attrs
+    aj = fj.root.location.attrs
+    err = ""
+
+    def assert_eq(tag):
+        if getattr(ai, tag) != getattr(aj, tag):
+            err += " {} {}/{}".format(tag, getattr(ai, tag), getattr(aj, tag))
+
+    assert_eq("north")
+    assert_eq("south")
+    assert_eq("east")
+    assert_eq("west")
+    assert_eq("lat_count")
+    assert_eq("lat_spacing")
+    assert_eq("lon_count")
+    assert_eq("lon_spacing")
+    assert_eq("fuzz")
+    assert_eq("resolution")
+
+    if err:
+        return "{} + {}: grid parameter mismatch:{}".format(
+            fi.filename, fj.filename, err)
+    return ""
+
+def label_for(f):
+    ann = f.root.location.attrs.annotations
+    if 'proxy_alleged_cc2' in ann and 'proxy_provider' in ann:
+        return ann['proxy_provider'] + '.' + ann['proxy_alleged_cc2']
+    if 'proxy_label' in ann:
+        return 'LABEL_' + ann['proxy_label']
+    return 'CC_' + ann.get('country', 'zz')
+
+def check_pair(args):
+    i, mi, m0 = args
+    with tables.open_file(m0) as f0, tables.open_file(mi) as fi:
+        return i, label_for(fi), check_matching_grid(f0, fi)
+
+
+def merge_outer_join(R, S, key, val):
+    """Perform an outer join on R and S.  Abstractly, this pairs up
+    the elements of R and S by key(x), and yields 3-tuples
+    (key(rx or sx), val(rx), val(sx)), in sorted order.
+    If some elements of R lack matching elements in S, or
+    vice versa, then the missing val() is replaced with a None.
+
+    Example:
+
+        list(merge_outer_join([(1,'a'), (3,'b')], [(1,'x'), (2,'y')],
+                              key=lambda x: x[0],
+                              val=lambda x: x[1]))
+        -->
+        [(1,'a','x'), (2,None,'y'), (3,'b',None)]
+
+    Corrected, Py3k-ified, and simplified from
+    https://code.activestate.com/recipes/492216/
+    with a bunch of help from
+    https://codereview.stackexchange.com/questions/141580"""
+
+    # We are working with two iterators in parallel but not in lockstep,
+    # so we must watch out for either one running out at any time.
+    class StopR(Exception): pass
+    class StopS(Exception): pass
+    def advance(itr, exc):
+        try: return next(itr)
+        except StopIteration: raise exc
+
+    R = iter(sorted((key(r), val(r)) for r in R))
+    S = iter(sorted((key(s), val(s)) for s in S))
+
+    try:
+        # Whenever we pull values from both R and S, we must first
+        # set from_S to None in case advance(R) throws.
+        from_S = None
+        from_R = advance(R, StopR)
+        from_S = advance(S, StopS)
+
+        while True:
+            if from_R[0] == from_S[0]:
+                yield (from_R[0], from_R[1], from_S[1])
+
+                from_S = None
+                from_R = advance(R, StopR)
+                from_S = advance(S, StopS)
+
+            elif from_S[0] < from_R[0]:
+                yield (from_S[0], None, from_S[1])
+                from_S = advance(S, StopS)
+
+            else:
+                yield (from_R[0], from_R[1], None)
+                from_R = advance(R, StopR)
+
+    except StopR:
+        while True:
+            if from_S is not None:
+                yield (from_S[0], None, from_S[1])
+            from_S = next(S)
+
+    except StopS:
+        while True:
+            yield (from_R[0], from_R[1], None)
+            from_R = next(R)
+
+def process_pair(args):
+    from math import sqrt
+
+    i, j, mi, mj = args
+    sij = 0
+    sii = 0
+    sjj = 0
+
+    with tables.open_file(mi) as fi, \
+         tables.open_file(mj) as fj:
+        for _, vi, vj in merge_outer_join(
+                fi.root.location.iterrows(),
+                fj.root.location.iterrows(),
+                key=lambda row: (row['grid_x'], row['grid_y']),
+                val=lambda row: row['prob_mass']):
+            if vi:
+                sii += vi*vi
+            if vj:
+                sjj += vj*vj
+            if vi and vj:
+                sij += vi*vj
+
+    # avoid division by zero
+    if sii and sjj:
+        return i, j, 1 - sij/(sqrt(sii)*sqrt(sjj))
+    return i, j, 1
+
+def enumerate_disjoint_pairs(ms):
+    N = len(ms)
+    for i in range(N):
+        for j in range(i+1, N):
+            yield (i, j, ms[i], ms[j])
+
+def select_interesting_items(dissim):
+    """A dissimilarity-matrix row is _interesting_ if at least one
+       off-diagonal entry is not equal to 1."""
+    N   = dissim.shape[0]
+    sel = np.zeros((N,), np.bool)
+    for i in range(N-1):
+        if np.any(dissim[i,(i+1):] < 0.99):
+            sel[i] = True
+    if np.any(dissim[N-1, :(N-1)] < 0.99):
+        sel[N-1] = True
+    return sel
+
+def process(mats, pool, outf):
+    N      = len(mats)
+    names  = [None] * N
+    error  = False
+    nameu  = collections.Counter()
+    pm     = ProgressMonitor()
+
+    # Check all the grid parameters once at the beginning, and determine
+    # all the labels.  This is quadratically more efficient than checking
+    # them every time.  If all files' grid parameters are equal to file 0's
+    # grid parameters, then transitively they are all equal to each other.
+    pm.start_job(N, "files to check")
+    for i, li, err in pool.imap_unordered(
+            check_pair,
+            ((i, mats[i], mats[0]) for i in range(N))):
+        pm.tick()
+        if err:
+            pm.message(err)
+            error = True
+        else:
+            assert names[i] is None
+            nameu[li] += 1
+            names[i] = li + str(nameu[li])
+
+    if err:
+        raise SystemExit(1)
+
+    # Reorder the matrix by label.
+    oind  = sorted((name, ix) for ix, name in enumerate(names))
+    names = [None]*N
+    omats = [None]*N
+    for i, (name, ix) in enumerate(oind):
+        names[i] = name
+        omats[i] = mats[ix]
+
+    # A dissimilarity matrix has zeros on the main diagonal, and is
+    # symmetric about the main diagonal.  We could store just the
+    # upper triangle, but Num/SciPy doesn't seem to have a
+    # sparse-matrix class that does that.
+    dissim = np.zeros((N, N))
+    pm.start_job(N * (N - 1) // 2, "pairs of files to process")
+    for i, j, dij in pool.imap_unordered(
+            process_pair, enumerate_disjoint_pairs(omats)):
+
+        pm.tick()
+        dissim[i,j] = dij
+        dissim[j,i] = dij
+
+    pm.message("selecting interesting items...")
+    sel = select_interesting_items(dissim)
+    pm.message("{} of {} items selected.", sel.sum(), N)
+
+    pm.message("writing matrix...")
+    wr = csv.writer(outf, dialect='unix', quoting=csv.QUOTE_MINIMAL)
+    wr.writerow([name for name, isint in zip(names, sel) if isint])
+    for i in range(N):
+        if sel[i]:
+            wr.writerow(dissim[i,sel])
+    pm.message("done.")
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument("input_dir",
+                    help="Directory to read .h5-format location matrices from."
+                    "All such matrices must have the same grid parameters.")
+    args = ap.parse_args()
+
+    mats = sorted(glob.glob(os.path.join(args.input_dir, "*.h5")))
+
+    with multiprocessing.Pool() as pool, sys.stdout as outf:
+        process(mats, pool, outf)
+
+main()

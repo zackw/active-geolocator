@@ -329,17 +329,10 @@ def report_results(cfg, results):
         sys.stderr.write("Reporting results to server...")
         postdata = urlencode([('blob', blob)]).encode('utf-8')
         with urlopen(cfg.results_url, postdata) as f:
-            # The expected response is code 204 and no output.
+            # The expected response is either code 204 and no output,
+            # or 200 and a small JSON confirmation.
             code = f.getcode()
             body = f.read()
-            if code != 204 or body != b"":
-                sys.stderr.write(
-                    "unexpected response to POST {}:\n"
-                    "  code    = {}\n"
-                    "  headers = {!r}\n"
-                    "  body    = {!r}\n"
-                    .format(cfg.results_url, code, f.info().items(), body))
-                sys.exit(1)
     except URLError as e:
         sys.stderr.write("\n{}:\n   {}\n".format(cfg.landmark_url, e))
         try:
@@ -353,7 +346,34 @@ def report_results(cfg, results):
             pass
         sys.exit(1)
 
-    sys.stderr.write("done.\nThank you for your assistance.\n")
+    if code == 204 and body == b"":
+        finished_message(None)
+        return
+
+    elif code == 200 and body != b"":
+        try:
+            resp = json.loads(body.decode("utf-8"))
+            finished_message(resp["ccode"])
+            return
+
+        except Exception:
+            pass
+
+    sys.stderr.write(
+        "unexpected response to POST {}:\n"
+        "  code    = {}\n"
+        "  headers = {!r}\n"
+        "  body    = {!r}\n"
+        .format(cfg.results_url, code, f.info().items(), body))
+    sys.exit(1)
+
+def finished_message(ccode):
+    if ccode:
+        sys.stderr.write("done (confirmation code: {}).".format(ccode))
+    else:
+        sys.stderr.write("done.")
+
+    sys.stderr.write("\nThank you for your assistance.\n")
 
 def perform_probes(cfg, addresses):
     """Make a connection to each of the ADDRESSES, in order, and measure

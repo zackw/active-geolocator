@@ -56,6 +56,18 @@ CREATE INDEX measurements_dst ON geolocation.measurements(dst);
 
 GRANT SELECT ON geolocation.measurements TO PUBLIC;
 
+CREATE TABLE geolocation.geoip (
+       "ip"        INET     NOT NULL,
+       "db"        TEXT     NOT NULL,
+       "country"   CITEXT   NOT NULL DEFAULT('zz')
+                            REFERENCES ancillary.country_codes(cc2),
+       "city"      TEXT     NOT NULL DEFAULT(''),
+       "latitude"  REAL     NOT NULL DEFAULT(0),
+       "longitude" REAL     NOT NULL DEFAULT(0),
+       PRIMARY KEY("ip", "db")
+);
+GRANT SELECT ON geolocation.geoip TO PUBLIC;
+
 
 -- Country data taken from http://www.opengeocode.org/download/countrynames.txt
 -- (ISO 3166-1 alpha-2,3 codes and English short names)

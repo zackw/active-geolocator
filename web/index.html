@@ -1,133 +1,322 @@
-<!DOCTYPE html>
+<!doctype html>
 <html>
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>Active Geolocation Project — Overview</title>
-  <link rel="stylesheet" href="s/styles.css">
-</head>
-<body>
-  <a id="logo" href="https://www.cylab.cmu.edu/"><img
-     alt="Carnegie Mellon University CyLab" src="s/main-logo.png"></a>
-  <ul id="navbar">
-    <li><a id="active" href="index.html">Overview and Informed Consent</a></li>
-    <li><a href="instr.html">Detailed Instructions</a></li>
-    <li><a href="research.html">Research Questions</a></li>
-    <li><a href="methods.html">Measurement Methodology</a></li>
-  </ul>
-  <div id="content">
-    <h1>Active Geolocation Project</h1>
-    <h2>Overview and Informed Consent</h2>
-    <p>This website is part of a research study conducted by
-      <b>Nicolas Christin</b> and <b>Zachary Weinberg</b> at Carnegie Mellon
-      University.</p>
-    <p>The purpose of our research is to test “active geolocation”
-      algorithms. These attempt to determine where in the world a computer
-      is, by measuring how long it takes network messages from that computer
-      to reach other computers in known locations. We test them by making
-      measurements from computers in known locations. We can then compare the
-      position calculated by each algorithm with the truth. We’re also
-      comparing with the position reported by commercial geolocation services
-      (such as <a href="https://www.maxmind.com/">MaxMind</a> and <a
-      href="http://geobytes.com/">Geobytes</a>) for the computer’s IP
-      address.</p>
-    <h3>Participant Requirements</h3>
-    <p>We need volunteers who are willing to run our measurement software
-      on their computers, and tell us where they are. We’re especially
-      interested in data reported from computers that are not in Europe nor
-      North America, but data from anywhere is useful. For legal reasons, you
-      must be at least 18 years old to volunteer.</p>
-    <p>Presently the software can only be run from a Unix command line; you
-      will need to retrieve it from a Git repository, you will need a recent
-      Python interpreter (2.7, 3.4, and 3.5 are all known to work), and you
-      will also need to compile a small, standalone C program (not a Python
-      extension). If you don’t know what these terms mean, or how to do these
-      things, please don’t try to help us now; stay tuned for the
-      user-friendlier software which is in development.</p>
-    <h3>Direct Risks, Benefits, and Compensation</h3>
-    <p>Volunteering requires a few minutes of your time and attention, to
-      determine the latitude and longitude of each computer you’re going to
-      run our measurement program on, then to download the software and set
-      it running. This will be no more difficult or demanding than typical
-      online activities.</p>
-    <p>The program itself will need to run for about half an hour, with the
-      computer continuously connected to the Internet, but you don’t have to
-      do anything more after it’s started. It requires only a trivial amount
-      of disk space and CPU time. It generates a small amount of network
-      traffic—less than 100kB in total—spread over its runtime. It’s careful
-      not to place a significant load on any of the computers it sends
-      network messages to, so those computers’ operators will not be annoyed
-      with you.</p>
-    <p>There is no direct benefit to you from participating in this study.
-      We cannot offer any compensation, but neither should it cost you
-      anything to participate. (We recommend not running the measurements on
-      a network connection that charges you by the minute.) We hope a small
-      contribution to the advancement of science is its own reward.</p>
-    <h3>Confidentiality of Information Collected</h3>
-    <p>We ask you to tell us the latitude and longitude of each computer
-      you run the measurement software on, we record each computer’s public
-      IP address automatically, and the measurements themselves reveal the
-      computer’s location, although quite imprecisely. This data is
-      considered “personally identifiable information” under US law. Its
-      disclosure could harm you. For instance, if you reveal to us the
-      location of a computer in your house, and then our database is stolen,
-      the thief would be able to associate your IP address with a location,
-      more precisely than they can from the commercial geolocation
-      services.</p>
-    <p>To safeguard against this risk, we take several precautions. You are
-      encouraged to round off the latitude and longitude to two decimal
-      places; this means we only learn each location to within one kilometer.
-      We don’t ask for any other information about you; we don’t, for
-      instance, learn your name or your email address. All of the data we
-      collect is encrypted in transmission from your computer to our
-      database. The database is not encrypted, but it is isolated on a
-      computer under our physical control, and only the researchers involved
-      in this study have access to it.</p>
-    <p>We will only disclose IP addresses and precise locations to anyone
-      else if required to do so by a future law, regulation, subpoena or
-      court order. We might, in the future, publish a redacted version of the
-      database for other researchers to use. All the latitudes and longitudes
-      will be rounded to two decimal places, and the IP addresses will be
-      replaced with “<a
-      href="https://en.wikipedia.org/wiki/Autonomous_system">autonomous
-      system</a>” numbers, which identify each computer’s ISP but not the
-      computer itself. If you don’t want us to reveal even this much
-      information, you can tell us so when you run the software.</p>
-    <p>All that said, if there’s some reason why a particular person must
-      not find out where you live, we recommend you don’t help us, at least
-      not with a computer in your house.</p>
-    <h3>Right to Ask Questions & Contact Information</h3>
-    <p>If you have any questions about this study, you should feel free to
-      ask them before proceeding, by contacting Zachary Weinberg at <a
-      href="mailto:zackw@cmu.edu">zackw@cmu.edu</a>, or Nicolas Christin at
-      <a href="mailto:nicolasc@cmu.edu">nicolasc@cmu.edu</a>. If you have
-      questions later, desire additional information, or wish to withdraw
-      your participation, you can also contact us at the above addresses. You
-      can read more about <a href="research.html">the research questions
-      we’re investigating</a>, or <a href="methods.html">the measurement
-      methodology</a>, on this website.</p>
-    <p>If you have questions pertaining to your rights as a research
-      participant; or to report concerns to this study, you should contact
-      the Office of Research integrity and Compliance at Carnegie Mellon
-      University.<br>
-      Email: <a href="mailto:irb-review@andrew.cmu.edu">irb-review@andrew.cmu.edu</a><br>
-      Phone: <a href="tel:+14122681901">412-268-1901</a> or
-     <a href="tel:+14122685460">412-268-5460</a>.</p>
-    <h3>Voluntary Participation</h3>
-    <p>Your participation in this research is voluntary. If you have
-      decided that you want to participate, please proceed to the <a
-      href="instr.html">detailed instructions for running the measurement
-      program</a>.</p>
-    <p>We are not asking you to sign a formal statement of consent, because
-      that would involve recording your name. By running the measurement
-      program, you assert that you are age 18 or older and you have read and
-      understood all the above information, and you consent to the collection
-      of your computer’s IP address, its latitude and longitude as reported
-      by you, and the time it takes network messages to reach roughly 500
-      other computers and return. You understand and agree that Carnegie
-      Mellon is legally required to preserve all research data for at least
-      three years, and could be required to disclose your location and IP
-      address by a future law, regulation, subpoena or court order.</p>
-  </div>
-</body>
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <!-- OpenLayers needs rAF, Element.prototype.classlist, and URL.
+    ui.js needs Array.map, Date.toISOString, document.getElementsByClassName,
+    fetch, and Promise. The webpage needs ~html5-elements.
+    Load this sync & early since it may poke the HTML parser.
+    It’s possible to self-host this but it’s a very big Twinkie :-/ -->
+    <script src="//cdn.polyfill.io/v2/polyfill.min.js?flags=gated&rum=0&unknown=polyfill&features=requestAnimationFrame,Element.prototype.classList,URL,Array.map,Date.prototype.toISOString,document.getElementsByClassName,fetch,Promise,~html5-elements"></script>
+    <title>Active Geolocation Project — Web-based Measurement</title>
+    <link rel="stylesheet" href="s/ol-3.18.2/ol.css">
+    <link rel="stylesheet" href="s/styles.css">
+    <link rel="stylesheet" href="client.css">
+  </head>
+  <body>
+    <div class="text_container">
+      <header>
+        <a id="logo" href="https://www.cylab.cmu.edu/"><img alt="Carnegie Mellon University CyLab" src="s/main-logo.png"></a>
+        <h1 id="title">Active Geolocation Project</h1>
+        <ul id="navbar">
+          <li><a id="active" href="index.html">Web-based Measurement</a></li>
+          <li><a href="commandline.html">Command-Line Measurement Instructions</a></li>
+          <li><a href="research.html">Research Questions</a></li>
+        </ul>
+      </header>
+      <p>You can find out where a computer is physically, by measuring
+        how long it takes to communicate with other computers in known
+        locations.  But nobody is sure how well this works outside of
+        Europe and North America.</p>
+
+      <p>This demo is part of a research study conducted by
+        <a href="https://www.owlfolio.org/">Zachary Weinberg</a>,
+        <a href="https://cylab.cmu.edu/education/facultychristin.html">Nicolas
+          Christin</a>, and
+        <a href="https://cylab.cmu.edu/education/faculty/sekar.html">Vyas
+          Sekar</a> of Carnegie Mellon University.  It will show you how
+        accurately this measurement can locate your computer, and
+        then, if you want, you can send us the measurements to help
+        with our research.</p>
+
+      <noscript class="error_message message">For this demo to
+        work, you must use a browser with JavaScript enabled.</noscript>
+      <div id="error_message" class="error_message message hide"></div>
+      <div id="loading_message" class="wait_message message hide">Loading, please wait…</div>
+    </div>
+
+    <div id="map_container" class="hide">
+      <div class="during_run hide">
+        <p>The demo can take several minutes to run, and the map won’t
+          change until close to the end.</p>
+        <progress id="run_progress" value="0" max="0">0/0</progress>
+      </div>
+      <p id="after_demo" class="hide">Now that you’ve seen the demo,
+        are you interested in helping us with our
+        research? <button type="button" id="open_consent_form">Tell me
+        more</button></p>
+      <div id="map_aspect_ratio">
+        <div id="map" class="map"></div>
+        <button type="button" id="go" class="hide">Start</button>
+      </div>
+      <select id="map_units">
+        <option value="degrees">degrees</option>
+        <option value="imperial">imperial inch</option>
+        <option value="us">us inch</option>
+        <option value="nautical">nautical mile</option>
+        <option value="metric" selected>metric</option>
+      </select>
+      <table id="map_key" class="gl_b_or_f hide">
+        <thead><tr><th colspan="2">Your location for comparison</th></tr></thead>
+        <tbody>
+          <tr class="gl_b hide"><td><img src="map_pin_user.png"></td><td>From your browser</td></tr>
+          <tr class="gl_f hide"><td><img src="map_pin_proxy.png"></td><td>From freegeoip.net</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="text_container">
+      <div id="browser_ok" class="hide">
+        <h2>How it works</h2>
+        <p>Your computer sends messages to 200 other computers around
+          the world (the “anchor” servers of
+          the <a href="https://atlas.ripe.net/">RIPE Atlas</a>), and
+          measures the round-trip times.</p>
+        <p>We know where those servers are and we have measured how
+          long it takes them to talk to each other.  Using that, we
+          can estimate that if it takes <i>this</i> long for your
+          computer to communicate with <i>that</i> server, then they
+          are at most <i>this</i> far apart.  (This is called
+          the <a href="http://cs-www.bu.edu/faculty/crovella/paper-archive/imc04-geolocation-full.pdf"><abbr title="Constraint-based
+          geolocation">CBG</abbr></a> algorithm.)</p>
+        <p>For each server, the demo draws a circle on the map
+          covering “this far apart,” unless it would be too big to be
+          helpful (more than half the surface of the Earth).  Your
+          computer should be where all the circles coincide.</p>
+        <p class="gl_b_or_f hide">For comparison, the map
+          also shows where
+          <a class="gl_b hide"
+              href="https://en.wikipedia.org/wiki/W3C_Geolocation_API"
+             >your browser</a><span class="gl_b_and_f hide"> and </span><a
+          <a class="gl_f hide" href="https://freegeoip.net/"
+             >freegeoip.net</a>
+            think<span class="gl_b_xor_f hide">s</span>
+          your computer is located.</p>
+      </div>
+
+      <div id="consent_form" class="hide">
+        <h2>Helping with the research</h2>
+
+        <p>We need you to tell us your computer’s <i>true</i>
+          location<span class="gl_b_or_f hide">, which might not be
+          where <span class="gl_b hide">your
+          browser</span><span class="gl_b_and_f hide">
+          or </span><span class="gl_f hide">freegeoip.net</span>
+          think<span class="gl_b_xor_f hide">s</span> it is</span>,
+          and whether you are using a network proxy.  We will also
+          automatically record:</p>
+        <ul>
+          <li>your computer’s public IP address (if you are using a
+            proxy, this will be the proxy’s address)</li>
+          <li>all of the round-trip time measurements</li>
+          <li class="gl_b hide">where your browser thinks your
+            computer is</li>
+          <li class="gl_f hide">where freegeoip.net thinks your
+            computer is</li>
+          <li>and the browser you are using
+          (<span id="browser_ver"></span>).</li>
+        </ul>
+
+        <p>CMU’s Office of Research Integrity and Compliance requires
+          us to warn you that the data we collect is considered
+          “<a href="https://en.wikipedia.org/wiki/Personally_identifiable_information">personally
+          identifiable information</a>” under US law, and that the
+          university is legally required to store all research data
+          for at least three years.  We take care to protect it:</p>
+
+        <ul>
+          <li>We don’t ask for your name, your email address, or
+            anything else about you.</li>
+          <li>We only ask for your true location to within one
+            kilometer (1/100 of a degree).</li>
+          <li>All of the data is encrypted in transmission from your
+            computer to our database.</li>
+          <li>The database is on a computer under our physical
+            control.  Only the researchers involved in this study have
+            access to it.</li>
+          <li>We will only reveal your IP address if required to do
+            so by a future law, regulation, subpoena or court order.</li>
+          <li>We might, in the future, publish a version of the
+            database for other researchers to use. If we do this, the
+            IP addresses will all be replaced with
+            “<a href="https://en.wikipedia.org/wiki/Autonomous_system"
+            >autonomous system</a>” numbers, which identify each
+            computer’s ISP but not the computer itself. If you don’t
+            want us to publish even this much information, you can
+            tell us so in the form below.</li>
+        </ul>
+
+        <p>However, participating in this study could still harm you,
+          especially if our database is stolen.  The thief would be
+          able to associate your IP address with your location, more
+          precisely than they could if they only knew your IP address.
+          If there’s someone specific who must not find out where you
+          live, we recommend you don’t send us data collected by a
+          computer in your house.</p>
+
+        <p>Also, for legal reasons, please don’t send us any data if
+          you are younger than 18 years old.</p>
+
+        <p>If you want to ask questions about this study, before or
+          after sending us data, please contact Zachary Weinberg
+          at <a href="mailto:zackw@cmu.edu">zackw@cmu.edu</a>, or
+          Nicolas Christin at
+          <a href="mailto:nicolasc@cmu.edu">nicolasc@cmu.edu</a>.</p>
+
+        <p>If you have concerns about this study, or questions about
+          your rights as a research participant, you can contact the
+          Office of Research Integrity and Compliance directly,
+          at <a href="mailto:irb-review@andrew.cmu.edu">irb-review@andrew.cmu.edu</a>
+          or <a href="tel:+14122681901">412-268-1901</a> or
+          <a href="tel:+14122685460">412-268-5460</a>.</p>
+
+        <h3>To send in your data, please fill in this form:</h3>
+
+        <form id="user_params" method="post"
+              action="/active-geo/api/1/probe-results">
+          <p>Please tell us the physical location of the computer
+            running this web browser, in decimal degrees, with two
+            decimal places of accuracy.</p>
+          <p>The best way to get the computer’s location is
+            with <a href="https://en.wikipedia.org/wiki/Global_Positioning_System">GPS</a>;
+            most smartphones can take a GPS reading. The iPhone ships with a
+            “Compass” utility that, among other things, shows you your
+            latitude and longitude (in degrees, minutes, and seconds; you
+            will have to convert). For Android, you need a third-party app:
+            we suggest “<a href="https://play.google.com/store/apps/details?id=com.gpscoordinatesandlocation">My
+              GPS Coordinates</a>”.</p>
+
+          <p>If you don’t have a GPS-capable phone or dedicated
+            receiver, or you can’t go to where the computer is and
+            take a GPS reading, the next best option is to look up the
+            postal address of the building in an address-to-location
+            service, such
+            as <a href="http://www.latlong.net/convert-address-to-lat-long/.html">latlong.net</a>.</p>
+          <p>Use positive numbers for north of the Equator
+            and east of Greenwich, negative numbers for south / west.
+          <fieldset>
+            <table><tr>
+                <td><label for="client-lat">Client latitude:</label></td>
+                <td><input name="client-lat" id="client-lat" type="number"
+                           minlength="1" maxlength="6"
+                           min="-90" max="90" step="0.01"
+                           pattern="-?(?:\d{1,2}(?:\.\d{0,2})?|\.\d{1,2})"
+                           required></td>
+                <td><span id="client-lat-ve" class="validation_error hide"
+                          >Must be a number from -90.00 to 90.00.</span></td>
+              </tr><tr>
+                <td><label for="client-lon">Client longitude:</label></td>
+                <td><input name="client-lon" id="client-lon" type="number"
+                           minlength="1" maxlength="7"
+                           min="-180" max="180" step="0.01"
+                           pattern="-?(?:\d{1,3}(?:\.\d{0,3})?|\.\d{1,2})"
+                           required></td>
+                <td><span id="client-lon-ve" class="validation_error hide"
+                          >Must be a number from -180.00 to 180.00.</span></td>
+            </tr></table>
+          </fieldset>
+          <p>If you are using a network proxy, please tell us its
+            physical location, too.</p>
+          <fieldset>
+            <input type="radio" name="proxy-loc" id="proxy-no" value="no" checked>
+            <label for="proxy-no">I’m not using a proxy</label><br>
+            <input type="radio" name="proxy-loc" id="proxy-unknown" value="unknown">
+            <label for="proxy-unknown">I don’t know where the proxy is</label><br>
+            <input type="radio" name="proxy-loc" id="proxy-coords" value="coords">
+            <label for="proxy-coords">The proxy is at these coordinates:</label><br>
+            <fieldset>
+              <table><tr>
+                  <td><label for="proxy-lat">Proxy latitude:</label></td>
+                  <td><input name="proxy-lat" id="proxy-lat" type="number"
+                             minlength="1" maxlength="6"
+                             min="-90" max="90" step="0.01"
+                             pattern="-?(?:\d{1,2}(?:\.\d{0,2})?|\.\d{1,2})"
+                             disabled></td>
+                <td><span id="proxy-lat-ve" class="validation_error hide"
+                          >Must be a number from -90.00 to 90.00.</span></td>
+                </tr><tr>
+                  <td><label for="proxy-lon">Proxy longitude:</label></td>
+                  <td><input name="proxy-lon" id="proxy-lon" type="number"
+                             minlength="1" maxlength="7"
+                             min="-180" max="180" step="0.01"
+                             pattern="-?(?:\d{1,2}(?:\.\d{0,2})?|\.\d{1,2})"
+                             disabled></td>
+                <td><span id="proxy-lon-ve" class="validation_error hide"
+                          >Must be a number from -180.00 to 180.00.</span></td>
+              </tr></table>
+            </fieldset>
+          </fieldset>
+          <p>If we publish our database for other researchers to use,
+            is it OK for us to include data collected by this
+            computer?</p>
+          <fieldset>
+            <input type="radio" name="publication" id="pub-yes" value="yes" checked>
+            <label for="pub-yes">Yes</label>
+            <input type="radio" name="publication" id="pub-no" value="no">
+            <label for="pub-no">No</label>
+          </fieldset>
+          <button id="submit_form">Send in the data</button>
+          <div id="sending_message"
+               class="wait_message message hide">Transmitting…</div>
+          <div id="send_error_message"
+               class="error_message message hide"></div>
+          <div id="completion_message" class="hide">
+            <p id="ccode-para" class="hide"><strong>Confirmation code: <span id="ccode-box"></span></strong></p>
+            <p>Data transmitted.  Thank you for your help.</p>
+            <p>If you have access to other computers in different
+              cities, we encourage you to run this measurement on all
+              of them.  If you only have remote shell access to those
+              computers, we have
+              a <a href="commandline.html">command-line tool</a> that
+              makes the same measurement.  (It’s also more accurate
+              than what we can do inside a browser.)</p>
+            <p>It’s not as helpful to run this measurement on more
+              than one computer in the <em>same</em> city, unless
+              their routes to the Internet backbone are very different
+              (for instance, if one gets its connectivity from a
+              residential ISP, and another from a cellphone system).
+              It’s not necessary at all to run the measurement on more
+              than one browser on the same computer.</p>
+          </div>
+        </form>
+      </div>
+      <footer>
+        <p>If this demo does not work correctly, please
+          <a href="https://github.com/zackw/active-geolocator/issues/new"
+             >let us know</a>.  We will need to know which web browser
+             you are using, and its version number (usually found in
+             an “about” dialog).  It will also be helpful if you
+             provide the contents of the “technical log” below this
+             text (click to expand).</p>
+        <p>Copyright 2016
+          <a href="https://www.owlfolio.org/contact/">Zachary Weinberg</a>.
+          <a href="https://github.com/zackw/active-geolocator">Source available</a>
+          under the terms of the
+          <a href="https://tldrlegal.com/license/mit-license">MIT License</a>.
+        </p>
+      <details>
+        <summary>Technical log</summary>
+        <pre id="log"></pre>
+      </details>
+      </footer>
+    </div>
+    <div id="offstage">
+      <img src="map_pin_proxy.png" id="pin_geoip">
+      <img src="map_pin_user.png" id="pin_browser">
+    </div>
+    <script async defer src="s/ol-3.18.2/ol.js"></script>
+    <script async defer src="s/proj4-2.3.14/proj4.js"></script>
+    <script async defer src="s/geographiclib-1.42.js"></script>
+    <script async defer src="ui.js"></script>
+  </body>
 </html>

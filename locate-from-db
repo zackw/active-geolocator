@@ -15,6 +15,7 @@ import pickle
 import sys
 import time
 import zlib
+from math import inf as Inf
 
 import psycopg2
 import psycopg2.extras
@@ -61,16 +62,24 @@ def get_batch_list(db, selector):
     progress("{} non-empty batches selected.", len(batches))
     return batches
 
-Position = collections.namedtuple("Position", ("lon", "lat"))
+Position = collections.namedtuple("Position", ("ipv4", "label", "ilabel", "lon", "lat"))
 def get_landmark_positions(db, batches):
     cur = db.cursor()
-    cur.execute("SELECT DISTINCT h.ipv4, h.longitude, h.latitude"
+    cur.execute("SELECT DISTINCT h.ipv4, h.label, h.longitude, h.latitude"
                 "  FROM hosts h, measurements m"
                 " WHERE m.dst = h.ipv4"
                 "   AND m.batch = ANY(%s)",
                 (batches,))
-    return { row[0]: Position(row[1], row[2])
-             for row in cur }
+    rv = {}
+    for row in cur:
+        try:
+            ilabel = int(row[1].partition('-')[2])
+        except:
+            ilabel = -1
+        pos = Position(row[0], row[1], ilabel, row[2], row[3])
+        rv[row[0]] = pos
+
+    return rv
 
 def router_for_addr(addr):
     return addr[:addr.rfind('.')] + '.1'
@@ -96,51 +105,106 @@ def retrieve_batch(db, batchid):
     metadata = {}
     metadata.update(metadata_raw)
 
-    # We don't need a fancy cursor for the next step.
+    # We don't need a fancy cursor for the next steps.
     cur = db.cursor()
+
     # There's only ever one source for any given batch (and it is
     # always equal to either client_addr or proxy_addr for that
     # batch).  Throw out all measurements that didn't come back with
     # either errno 0 or 111 (that is, success and ECONNREFUSED).  Also
     # throw out RTT zero, which tends to make the calibration choke.
-    # And finally throw out the actual proxy address and 127.0.0.1,
-    # both of which will have anomalously short RTTs.
+    # And finally throw out the client and proxy address and
+    # 127.0.0.1, which will have anomalously short RTTs (since they
+    # never hit the network).
     cur.execute("""
         SELECT dst, rtt FROM measurements
          WHERE batch = %s AND rtt > 0
            AND status IN (0, 111)
-           AND dst NOT IN ('127.0.0.1', %s)
-         ORDER BY rtt, dst
-         """, (batchid, metadata['proxy_addr']))
-
+           AND dst NOT IN ('127.0.0.1', %s, %s)
+         """, (batchid, metadata['client_addr'], metadata['proxy_addr']))
     measurements = collections.defaultdict(list)
-    if metadata['proxied']:
-        adjustment = None
-    else:
-        adjustment = 0
     for dst, rtt in cur:
-        if not (0 <= rtt < 5000):
+        if 0 <= rtt < 5000:
+            measurements[dst].append(rtt)
+        else:
             warning("out of range: {} -> {}: {}", batchid, dst, rtt)
-            continue
 
-        if adjustment is None:
-            # The measurement procedure attempted to identify and ping
-            # the proxy's router; if that worked, we can say with high
-            # confidence that its ping time represents the travel time
-            # to the proxy, and we should subtract that off.  If that
-            # didn't work, the minimum ping time is a host _near_ the
-            # proxy, and we arbitrarily set its travel time to five
-            # milliseconds.  The -0.1 in the router case is to prevent
-            # zero RTTs.
-            if dst == router_for_addr(metadata['proxy_addr']):
-                adjustment = max(rtt - 0.1, 0)
+    if metadata['proxied']:
+        # We need to determine and subtract off the travel time _to_
+        # the proxy.
+        # There are three ways to do this, in decreasing order of
+        # accuracy.  Ideally, we have a measurement of the RTT to the
+        # proxy's own router.
+        router = router_for_addr(metadata['proxy_addr'])
+        if router in measurements:
+            adjustment = min(measurements[router]) - 5
+            metadata['proxy_rtt_estimation_method'] = 'router'
+            metadata['proxy_rtt_estimation_addr'] = router
+        else:
+            # The client itself may also have been a ping destination.
+            # We can't look it up by address, but we can look in the
+            # hosts table for the location.
+            cur.execute("""
+                select ipv4 from hosts
+                 where abs(latitude - %s) < 0.01
+                   and abs(longitude - %s) < 0.01
+            """, (metadata['client_lat'], metadata['client_lon']))
+
+            cdest = None
+            adjustment = Inf
+            for row in cur:
+                addr = row[0]
+                if addr in measurements:
+                    cadj = min(measurements[addr])
+                    if cadj < adjustment:
+                        cdest = addr
+                        adjustment = cadj
+
+            if cdest is not None:
+                # If we have a ping destination that is colocated with
+                # the client, then we can estimate the RTT to the proxy
+                # as half of the RTT through the proxy and back to the
+                # client's location, minus a small fudge factor.
+                adjustment = adjustment/2 - 5
+                metadata['proxy_rtt_estimation_method'] = 'there_and_back'
+                metadata['proxy_rtt_estimation_addr'] = cdest
+
+        # In no case allow the adjustment to be greater than the
+        # smallest available measurement minus five milliseconds, nor
+        # allow it to be negative.
+        cdest = None
+        clamp = Inf
+        for addr, meas in measurements.items():
+            mmeas = min(meas)
+            if mmeas < clamp:
+                clamp = mmeas
+                cdest = addr
+        if clamp - 5 < adjustment:
+            metadata['proxy_rtt_estimation_clamp'] = clamp
+            metadata['proxy_rtt_estimation_clamp_addr'] = cdest
+            if 'proxy_rtt_estimation_method' in metadata:
+                metadata['proxy_rtt_estimation_method'] += '_clamped'
+                metadata['proxy_rtt_estimation_unclamped'] = adjustment
             else:
-                adjustment = max(rtt - 5, 0)
+                metadata['proxy_rtt_estimation_method'] = 'clamp'
 
-        measurements[dst].append(rtt - adjustment)
+            adjustment = clamp - 5
+        adjustment = max(adjustment, 0)
+        metadata['estimated_proxy_rtt'] = adjustment
 
-    metadata['estimated_proxy_rtt'] = adjustment
-    return metadata, measurements
+        # This loop mutates measurements, so pull the keys up front.
+        for addr in list(measurements.keys()):
+            measurements[addr] = sorted(
+                max(0.1, m - adjustment)
+                for m in measurements[addr]
+            )
+
+        progress("{}: adjust by {} (method {})",
+                 metadata['id'], adjustment,
+                 metadata['proxy_rtt_estimation_method'])
+
+    # convert to a normal dict for returning
+    return metadata, { k:v for k,v in measurements.items() }
 
 # these are filled in in main()
 positions    = None
@@ -154,21 +218,34 @@ def process_batch(args):
     bnd = basemap.bounds
     obsv = []
     for landmark, rtts in measurements.items():
-        if landmark not in positions: continue
-        if landmark not in cals: continue
+        if landmark not in positions:
+            continue
         lpos = positions[landmark]
+        if use_all:
+            calibration = cals[0]
+        elif landmark in cals:
+            calibration = cals[landmark]
+        elif lpos.label in cals:
+            calibration = cals[lpos.label]
+        elif lpos.ilabel in cals:
+            calibration = cals[lpos.ilabel]
+        else:
+            continue
 
         obs = ageo.Observation(
             basemap=basemap,
             ref_lat=lpos.lat,
             ref_lon=lpos.lon,
             range_fn=ranging,
-            calibration=cals[0] if use_all else cals[landmark],
+            calibration=calibration,
             rtts=rtts)
         obsv.append(obs)
         bnd = bnd.intersection(obs.bounds)
         if bnd.is_empty:
             return tag + " (empty intersection region)", str(metadata['id'])
+
+    if not obsv:
+        return tag + " (no observations)", str(metadata['id'])
 
     loc = obsv[0]
     for obs in obsv[1:]:

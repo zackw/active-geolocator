@@ -212,9 +212,9 @@ basemap      = None
 calibrations = None
 
 def process_batch(args):
-    global positions, calibrations, basemap
+    global positions, basemap
     odir, mode, metadata, measurements = args
-    tag, cals, ranging, use_all = calibrations[mode]
+    tag, cals, ranging, use_all = mode
     bnd = basemap.bounds
     obsv = []
     for landmark, rtts in measurements.items():
@@ -251,7 +251,7 @@ def process_batch(args):
     for obs in obsv[1:]:
         loc = loc.intersection(obs, bnd)
 
-    loc = loc.intersection(basemap, bnd)
+    #loc = loc.intersection(basemap, bnd)
     loc.annotations.update(metadata)
     loc.save(os.path.join(odir, tag + "-" + str(metadata['id']) + ".h5"))
     return tag, metadata['id']
@@ -265,10 +265,24 @@ def marshal_batches(args, db, batches, modes):
 def inner_main(args, pool, db, batches):
     global calibrations
 
-    modes = range(len(calibrations))
+    # FIXME: duplicates code from 'calibrate'
+    cal_cbg, cal_oct, cal_spo = calibrations
+    minmax = ageo.ranging.MinMax
+    gaussn = ageo.ranging.Gaussian
+    crunch_modes = [
+        ("cbg-m-1", cal_cbg, minmax, False),
+#       ("cbg-m-a", cal_cbg, minmax, True),
+        ("oct-m-1", cal_oct, minmax, False),
+#       ("oct-m-a", cal_oct, minmax, True),
+#       ("spo-m-1", cal_spo, minmax, False),
+        ("spo-m-a", cal_spo, minmax, True),
+#       ("spo-g-1", cal_spo, gaussn, False),
+        ("spo-g-a", cal_spo, gaussn, True)
+    ]
+
     for tag, id in pool.imap_unordered(
             process_batch,
-            marshal_batches(args, db, batches, modes)):
+            marshal_batches(args, db, batches, crunch_modes)):
         progress("{}: {}", id, tag)
 
 def main():

@@ -1,0 +1,175 @@
+#! /usr/bin/python3
+
+# usage: [-m basemap] output-dir database batch selector... > report.csv
+
+import os
+import sys
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), 'lib')))
+
+import ageo
+import collections
+import contextlib
+import csv
+import datetime
+import glob
+from math import pi, sin, cos
+import multiprocessing
+import psycopg2
+import pyproj
+import time
+
+_time_0 = time.monotonic()
+def progress(message, *args):
+    global _time_0
+    sys.stderr.write(
+        ("{}: " + message + "\n").format(
+            datetime.timedelta(seconds = time.monotonic() - _time_0),
+            *args))
+
+def warning(message, *args):
+    sys.stderr.write(
+        ("\t*** " + message + "\n").format(*args))
+
+_WGS84dist = pyproj.Geod(ellps='WGS84').inv
+def WGS84daz(lon1, lat1, lon2, lat2):
+    az, _, dist = _WGS84dist(lon1, lat1, lon2, lat2)
+    return dist, az
+
+TruePosition = collections.namedtuple("TruePosition",
+                                      ("id", "ipv4",
+                                       "r_lat", "r_lon",
+                                       "g_lat", "g_lon",
+                                       "b_lat", "b_lon"))
+
+def load_true_positions(db, batch_selector):
+    cur = db.cursor()
+    positions = {}
+    query = ("SELECT id, client_addr, client_lat, client_lon,"
+             "       (annot->>'geoip_lat')   :: real,"
+             "       (annot->>'geoip_lon')   :: real,"
+             "       (annot->>'browser_lat') :: real,"
+             "       (annot->>'browser_lon') :: real"
+             "  FROM batches"
+             " WHERE (" + batch_selector + ")")
+    cur.execute(query)
+    for row in cur:
+        pos = TruePosition(*row)
+        positions[pos.id] = pos
+        #positions[pos.ipv4] = pos
+
+    return positions
+
+def decode_filename(fname):
+    fname = os.path.splitext(os.path.basename(fname))[0]
+
+    # FIXME: hardcoded tag set and naming convention matching the
+    # hardcoding in 'calibrate'.
+    sp = fname.rfind('-')
+    tag = fname[:sp]
+    tid = fname[sp+1:]
+
+    calg, cset = {
+        'cbg-m-a': ('CBG',                'Combined'),
+        'cbg-m-1': ('CBG',                'Separate'),
+        'oct-m-a': ('Octant',             'Combined'),
+        'oct-m-1': ('Octant',             'Separate'),
+        'spo-m-a': ('Spotter (uniform)',  'Combined'),
+        'spo-m-1': ('Spotter (uniform)',  'Separate'),
+        'spo-g-a': ('Spotter (gaussian)', 'Combined'),
+        'spo-g-1': ('Spotter (gaussian)', 'Separate'),
+    }[tag]
+
+    return int(tid), calg, cset
+
+def cdtr_1(a_lon, a_lat, p_lon, p_lat):
+    if p_lon is None or p_lat is None or a_lon is None or a_lat is None:
+        return None
+    try:
+        distance, _ = WGS84daz(p_lon, p_lat, a_lon, a_lat)
+        return distance
+    except ValueError as e:
+        raise ValueError("{} - p_lon={} p_lat={} a_lon={} a_lat={}"
+                         .format(str(e), p_lon, p_lat, a_lon, a_lat)) from None
+
+def compute_distance_to_representative(loc, tpos):
+    p_lon, p_lat = loc.rep_pt
+    rp_dist = cdtr_1(tpos.r_lon, tpos.r_lat, p_lon, p_lat)
+    rg_dist = cdtr_1(tpos.r_lon, tpos.r_lat, tpos.g_lon, tpos.g_lat)
+    rb_dist = cdtr_1(tpos.r_lon, tpos.r_lat, tpos.b_lon, tpos.b_lat)
+
+    return (p_lon, p_lat, rp_dist, rg_dist, rb_dist)
+
+positions = None
+basemap = None
+def crunch_one(fname):
+    global positions
+    landmark, calg, cset = decode_filename(fname)
+    if landmark not in positions:
+        warning("{}: no true position, skipping", landmark)
+        return None
+
+    tpos = positions[landmark]
+
+    loc = ageo.Location.load(fname)
+    try:
+        (p_lon, p_lat, rp_dist, rg_dist, rb_dist) =
+            compute_distance_to_representative(loc, tpos)
+    except ValueError as e:
+        warning("{}: {}", fname, e)
+        return None
+
+    area = loc.area
+    re_dist = loc.distance_to_point(tpos.r_lon, tpos.r_lat)
+    return [
+        x for x in (
+            calg, cset, landmark,
+            tpos.r_lon, tpos.r_lat,
+            tpos.g_lon, tpos.g_lat,
+            tpos.b_lon, tpos.b_lat,
+            p_lon, p_lat,
+            rg_dist, rb_dist, rp_dist, re_dist
+        ) if x is not None else 'NA'
+    ]
+
+def main():
+    global positions, basemap
+
+    ap = argparse.ArgumentParser()
+    ap.add_argument("output_dir")
+    ap.add_argument("database")
+    ap.add_argument("batch_selector", nargs=argparse.REMAINDER)
+
+    args = ap.parse_args()
+    args.batch_selector = " ".join(args.batch_selector)
+
+    progress("loading...")
+    basemap = ageo.Map(args.basemap)
+    # Make sure to close the database before creating the worker processes.
+    with contextlib.closing(psycopg2.connect(dbname=args.database)) as db:
+        positions = load_true_positions(db, args.batch_selector)
+
+    with multiprocessing.Pool() as pool, \
+         sys.stdout as outf:
+        wr = csv.writer(outf, dialect='unix', quoting = csv.QUOTE_MINIMAL)
+        wr.writerow((
+            "c.alg", "c.set", "id",
+            "r.lon", "r.lat", "g.lon", "g.lat", "b.lon", "b.lat",
+            "p.lon", "p.lat",
+            "rg.dist", "rb.dist", "rp.dist", "re.dist"
+        ))
+
+        todo = sorted(glob.glob(os.path.join(args.output_dir, "*.h5")),
+                      key = lambda f: (os.stat(f).st_size, f))
+        n_todo = len(todo)
+        n = 0
+        for row in pool.imap_unordered(crunch_one, todo):
+            n += 1
+            if row is None:
+                continue
+            wr.writerow(row)
+            progress("{}/{}: {}: {}/{}".format(n, n_todo,
+                                               row[2], row[0], row[1]))
+
+    progress("done")
+
+main()

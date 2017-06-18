@@ -6,6 +6,7 @@ import os
 import sys
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), 'lib')))
 
+import argparse
 import collections
 import csv
 import datetime
@@ -37,6 +38,13 @@ def load_true_positions(fname):
     global positions
     with open(fname) as fp:
         rd = csv.DictReader(fp)
+        if 'id' in rd.fieldnames:
+            idf = 'id'
+        elif 'pid' in rd.fieldnames:
+            idf = 'pid'
+        else:
+            raise RuntimeError("{}: can't find id column among {!r}"
+                               .format(fname, rd.fieldnames))
         for row in rd:
             pos = TruePosition(
                 float(row['latitude']), float(row['longitude']),
@@ -45,12 +53,12 @@ def load_true_positions(fname):
             # sanity check
             if not (-90 <= pos.lat < 90) or not (-180 < pos.lon < 180):
                 warning("{} ({}): position off globe: {}, {}",
-                        row['id'], pos.ipv4, pos.lat, pos.lon)
+                        row[idf], pos.ipv4, pos.lat, pos.lon)
             elif (-1 < pos.lat < 1) and (-1 < pos.lon < 1):
                 warning("{} ({}): null island: {}, {}",
-                        row['id'], pos.ipv4, pos.lat, pos.lon)
+                        row[idf], pos.ipv4, pos.lat, pos.lon)
             else:
-                positions[int(row['id'])] = pos
+                positions[int(row[idf])] = pos
 
 def decode_filename(fname):
     fname = os.path.splitext(os.path.basename(fname))[0]
@@ -84,10 +92,25 @@ def load_regions(rgndir):
         regions.append((label, rgn))
     regions.sort()
 
+basemap = None
+def load_base_map(mapfile):
+    global basemap
+    basemap = ageo.Map(mapfile)
+
 def area_proportion_each_region(fname):
-    global regions
+    global regions, region_containing, positions, basemap
+    tid, _, _ = decode_filename(fname)
+    try:
+        tpos = positions[tid]
+        rc = region_containing[tid]
+    except KeyError:
+        return fname, None
     rv = np.zeros((len(regions),))
     loc = ageo.Location.load(fname)
+    if basemap is not None:
+        if basemap.contains_point(tpos.lon, tpos.lat):
+            loc = loc.intersection(basemap)
+
     for i, (_, rgn) in enumerate(regions):
         rv[i] = loc.intersection(rgn).area
 
@@ -108,25 +131,39 @@ def compute_region_containing():
         region_containing[id] = get_region_containing(tpos)
 
 def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("positions")
+    ap.add_argument("regions")
+    ap.add_argument("prediction_dir")
+    ap.add_argument("-m", dest="basemap")
+    args = ap.parse_args()
+
     progress("loading positions")
-    load_true_positions(sys.argv[1])
+    load_true_positions(args.positions)
     progress("loading regions")
-    load_regions(sys.argv[2])
+    load_regions(args.regions)
+
+    if args.basemap:
+        progress("loading base map")
+        load_base_map(args.basemap)
 
     progress("computing true containment")
     compute_region_containing()
 
     with multiprocessing.Pool() as pool:
-        predictions = sorted(glob.glob(os.path.join(sys.argv[3], "*.h5")))
+        predictions = sorted(glob.glob(os.path.join(args.prediction_dir, "*.h5")))
         wr = csv.writer(sys.stdout)
         wr.writerow(["algorithm", "cal_set", "id", "true_rgn"] +
                     [label for label, _ in regions])
         for fname, prop in pool.imap_unordered(area_proportion_each_region, predictions):
             tid, calg, cset = decode_filename(fname)
-            wr.writerow(np.concatenate([
-                [calg, cset, tid, region_containing[tid]],
-                prop
-            ]))
-            progress("{}: {}/{}", tid, calg, cset)
+            if prop is None:
+                progress("{}: {}/{} (no true position)", tid, calg, cset)
+            else:
+                wr.writerow(np.concatenate([
+                    [calg, cset, tid, region_containing[tid]],
+                    prop
+                ]))
+                progress("{}: {}/{}", tid, calg, cset)
 
 main()

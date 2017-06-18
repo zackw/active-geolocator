@@ -8,7 +8,7 @@ plus an "override" list that can adjust the categorization.
 import argparse
 import collections
 import csv
-
+import datetime
 import functools
 import math
 import os
@@ -172,9 +172,9 @@ class RegionLabeler:
 
     def __getitem__(self, key):
         props = key['properties']
-        cc2   = props['iso_a2'].casefold()
-        name  = props['name']
-        rgn   = props['subregion']
+        cc2   = props.get('iso_a2', 'zz').casefold()
+        name  = props.get('name', '<noname>')
+        rgn   = props.get('subregion', name)
         if cc2 in self.by_cc2:
             return self.by_cc2[cc2]
         if name in self.by_name:

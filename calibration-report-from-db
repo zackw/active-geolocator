@@ -7,6 +7,7 @@ import sys
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), 'lib')))
 
 import ageo
+import argparse
 import collections
 import contextlib
 import csv
@@ -102,7 +103,7 @@ def compute_distance_to_representative(loc, tpos):
 positions = None
 basemap = None
 def crunch_one(fname):
-    global positions
+    global positions, basemap
     landmark, calg, cset = decode_filename(fname)
     if landmark not in positions:
         warning("{}: no true position, skipping", landmark)
@@ -111,8 +112,15 @@ def crunch_one(fname):
     tpos = positions[landmark]
 
     loc = ageo.Location.load(fname)
+    if basemap is not None:
+        try:
+            if basemap.contains_point(tpos.r_lon, tpos.r_lat):
+                loc = loc.intersection(basemap)
+        except IndexError:
+            pass
+
     try:
-        (p_lon, p_lat, rp_dist, rg_dist, rb_dist) =
+        (p_lon, p_lat, rp_dist, rg_dist, rb_dist) = \
             compute_distance_to_representative(loc, tpos)
     except ValueError as e:
         warning("{}: {}", fname, e)
@@ -121,14 +129,15 @@ def crunch_one(fname):
     area = loc.area
     re_dist = loc.distance_to_point(tpos.r_lon, tpos.r_lat)
     return [
-        x for x in (
+        (x if x is not None else 'NA')
+        for x in (
             calg, cset, landmark,
             tpos.r_lon, tpos.r_lat,
             tpos.g_lon, tpos.g_lat,
             tpos.b_lon, tpos.b_lat,
-            p_lon, p_lat,
+            p_lon, p_lat, area,
             rg_dist, rb_dist, rp_dist, re_dist
-        ) if x is not None else 'NA'
+        )
     ]
 
 def main():
@@ -138,12 +147,14 @@ def main():
     ap.add_argument("output_dir")
     ap.add_argument("database")
     ap.add_argument("batch_selector", nargs=argparse.REMAINDER)
+    ap.add_argument("-m", dest="basemap")
 
     args = ap.parse_args()
     args.batch_selector = " ".join(args.batch_selector)
 
     progress("loading...")
-    basemap = ageo.Map(args.basemap)
+    if args.basemap:
+        basemap = ageo.Map(args.basemap)
     # Make sure to close the database before creating the worker processes.
     with contextlib.closing(psycopg2.connect(dbname=args.database)) as db:
         positions = load_true_positions(db, args.batch_selector)
@@ -154,7 +165,7 @@ def main():
         wr.writerow((
             "c.alg", "c.set", "id",
             "r.lon", "r.lat", "g.lon", "g.lat", "b.lon", "b.lat",
-            "p.lon", "p.lat",
+            "p.lon", "p.lat", "region.area",
             "rg.dist", "rb.dist", "rp.dist", "re.dist"
         ))
 

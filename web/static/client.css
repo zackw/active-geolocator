@@ -98,7 +98,7 @@ footer {
 #map_units {
     float: left;
     text-align: left;
-    margin: 0 0 5px 5px;
+    margin: 5px;
 }
 #map_key {
     float: right;

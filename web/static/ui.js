@@ -699,7 +699,7 @@
             lon = parseFloat(el.getAttribute("data-geoip-lon")),
             lat = parseFloat(el.getAttribute("data-geoip-lat"));
         if (Math.abs(lon) > 0.5 && Math.abs(lat) > 0.5) {
-            geoip_lat = lon;
+            geoip_lat = lat;
             geoip_lon = lat;
             log("location from geoip: " + geoip_lat +
                 ", " + geoip_lon);

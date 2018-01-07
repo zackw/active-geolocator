@@ -1,0 +1,25 @@
+# To configure this application, copy this file to 'config.py'
+# and uncomment and adjust whatever values need adjusting.
+
+# All other paths are relative to this directory.
+# If None, the instance directory is used.
+#BASE_DIR = None
+
+# Directory in which to store reports.
+#REPORT_DIR = 'reports'
+
+# If this is set to a GnuPG keyid, the reports will be encrypted
+# to that keyid.  If you set this, you must also put a keyring with
+# all the required keys into GPG_HOME.
+#ENCRYPT_TO = None
+
+# Directory containing GnuPG keyrings and configuration.
+#GPG_HOME = 'gnupg2'
+
+# A CSV file listing all the landmarks, with their locations and
+# CBG calibration parameters.
+#ALL_LANDMARKS = 'landmarks.csv'
+
+# A geolocation database in MaxMind "MMDB" format with city-level
+# granularity.
+#GEOIP_DB = '/var/lib/GeoIP/GeoLite2-City.mmdb'

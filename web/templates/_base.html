@@ -1,0 +1,34 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <title>Active Geolocation Project — {% block title %}{% endblock %}</title>
+    <link rel="stylesheet" href="{{ s('styles.css') }}">
+    {% block morestyles %}{% endblock %}
+    <!-- HTML5 shiv -->
+    <script src="//cdn.polyfill.io/v2/polyfill.min.js?flags=gated&rum=0&unknown=polyfill&features=~html5-elements"></script>
+  </head>
+  <body>
+    <div class="text_container">
+      <header>
+        <a id="logo" href="https://www.cylab.cmu.edu/"
+           ><img alt="Carnegie Mellon University CyLab"
+                 src="{{ s('main-logo.png') }}"></a>
+        <h1 id="title">Active Geolocation Project</h1>
+        <ul id="navbar">
+          <li><a {% block indexactive %}{% endblock %}
+                 href="{{ p('index') }}">Web-based Measurement</a></li>
+          <li><a {% block commandlineactive %}{% endblock %}
+                 href="{{ p('commandline') }}">Command-line Measurement
+              Instructions</a></li>
+          <li><a {% block researchactive %}{% endblock %}
+                 href="{{ p('research') }}">Research Questions</a></li>
+        </ul>
+      </header>
+      <h2>{{ self.title() }}</h2>
+      {% block contents %}{% endblock %}
+    </div>
+    {% block trailer %}{% endblock %}
+  </body>
+</html>

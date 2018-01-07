@@ -850,4 +850,3 @@ global.performance.now = function () {
     postMessage({ status: "ready" });
 
 }(self));
-/*global importScripts*/

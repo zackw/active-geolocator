@@ -39,12 +39,13 @@
         probe_failures = 0,
 
         config = {
+            // Where to find static resources (relative to index.html).
+            // Must end with a slash.
+            static_base: "static/",
             // URL of the list of addresses to probe.
-            landmark_url: "https://research.owlfolio.org/active-geo/api/1/landmark-list-with-locations",
+            landmark_url: "api/1/landmark-list-with-locations",
             // URL to push results back to.
-            results_url: "https://research.owlfolio.org/active-geo/api/1/probe-results",
-            // URL of geoip service.
-            geoip_url: "https://freegeoip.net/json/",
+            results_url: "api/1/probe-results",
             // Time between successive probes (milliseconds)
             spacing: 10,
             // Maximum number of concurrent probes to perform.
@@ -217,7 +218,7 @@
 
     // Loosely based on https://github.com/rstacruz/details-polyfill/
     function polyfill_details() {
-        var result, diff, el = d.createElement("details");
+        var result, diff, i, stylebase, el = d.createElement("details");
         if ('open' in el) {
             el.innerHTML = '<summary>a</summary>b';
             d.body.appendChild(el);
@@ -230,7 +231,7 @@
 
         el = d.createElement("link");
         el.setAttribute("rel", "stylesheet");
-        el.setAttribute("href", "details-poly.css");
+        el.setAttribute("href", config.static_base + "details-poly.css");
         d.head.appendChild(el);
         addGlobalEventListener("click", function details_polyfill_click(e) {
             var details;
@@ -694,27 +695,24 @@
     }
 
     function get_geoip_location () {
-        return fetch(config.geoip_url, {mode: "cors"})
-            .then(fetch_decode_json)
-            .then(function (location) {
-                geoip_lat = location.latitude;
-                geoip_lon = location.longitude;
-                log("location from geoip: " + geoip_lat +
-                    ", " + geoip_lon);
-                place_pin("geoip", geoip_lat, geoip_lon);
-                show_class("gl_b_or_f");
-                show_class("gl_f");
-                if (browser_lat === null) {
-                    show_class("gl_b_xor_f");
-                } else {
-                    hide_class("gl_b_xor_f");
-                    show_class("gl_b_and_f");
-                }
-            })
-            .catch(function (e) {
-                console.error("geoip lookup failure:", e);
-                log("geoip lookup failure: " + error_to_string(e));
-            });
+        var el  = document.getElementById("offstage"),
+            lon = parseFloat(el.getAttribute("data-geoip-lon")),
+            lat = parseFloat(el.getAttribute("data-geoip-lat"));
+        if (Math.abs(lon) > 0.5 && Math.abs(lat) > 0.5) {
+            geoip_lat = lon;
+            geoip_lon = lat;
+            log("location from geoip: " + geoip_lat +
+                ", " + geoip_lon);
+            place_pin("geoip", geoip_lat, geoip_lon);
+            show_class("gl_b_or_f");
+            show_class("gl_f");
+            if (browser_lat === null) {
+                show_class("gl_b_xor_f");
+            } else {
+                hide_class("gl_b_xor_f");
+                show_class("gl_b_and_f");
+            }
+        }
     }
 
 
@@ -758,7 +756,7 @@
                 return;
             }
             try {
-                worker = new Worker("worker.js");
+                worker = new Worker(config.static_base + "worker.js");
                 worker.onerror = reject;
                 worker.onmessage = function load_worker_shim (msg) {
                     try {

@@ -38,6 +38,7 @@
         coarse_circles = [],
         pending_pins = [],
         pending_circles = [],
+        overhead_estimators = {},
         probe_overhead = null,
         probe_successes = 0,
         probe_failures = 0,
@@ -65,10 +66,16 @@
             timeout: 10000,
             // Number of times to probe each landmark
             n_probes: 2,
+            // Number of fine landmarks to request
+            n_fine_landmarks: 50,
 
             // CBG tuning parameters - see calibration.py for rationale
             cbg_dist_limit: 20037508, // ½ equatorial circumf. of Earth (m)
             cbg_time_limit: 273.16,   // max plausible time to cover that (ms)
+
+            // Overhead limit: if the connection overhead is bigger than
+            // this many milliseconds, we don't believe it.  Needs tuning.
+            overhead_limit: 100,
 
             // Ports that XMLHttpRequest is not allowed to connect to.
             // See https://fetch.spec.whatwg.org/#port-blocking
@@ -501,6 +508,7 @@
         // Physical limits on meaningful RTT and circle radius
         if (minrtt > config.cbg_time_limit) return;
         radius = lm.cbg_m * minrtt + lm.cbg_b;
+        if (radius <= 0) return;
         radius = Math.min(radius, config.cbg_dist_limit);
 
         // Select the polygon group to add the circle to, based on its
@@ -653,11 +661,32 @@
         cbg_circle_src.changed();
     }
 
+    function maybe_calc_probe_overhead (lm) {
+        var i, addrs;
+        overhead_estimators[lm.addr] = true;
+        addrs = Object.keys(overhead_estimators);
+        for (i = 0; i < addrs.length; i++) {
+            if (!overhead_estimators[addrs[i]]) {
+                return false;
+            }
+        }
+
+        // If we get here, all the overhead estimators have reported in.
+        probe_overhead = Math.max.apply(Math, addrs.map(function (addr) {
+            var est = Math.min.apply(Math, landmark_data[addr].rtts);
+            log("overhead estimate from " + addr + " = " + est + " ms");
+            // Disregard estimates larger than a configurable limit,
+            // and estimates that somehow came out negative.
+            return (0 < est && est < config.overhead_limit) ? est : 0;
+        }));
+        log("using overhead estimate of " + probe_overhead + " ms");
+        return true;
+    }
+
     function place_cbg_circle(lm) {
         var i;
-        if (lm.lat === 0 && lm.lon === 0 && lm.cbg_m === 0 && lm.cbg_b === 0) {
-            probe_overhead = Math.min.apply(Math, lm.rtts);
-            log("estimated connection overhead: " + probe_overhead);
+        if (lm.lat === 0 && lm.lon === 0 && lm.cbg_m === 0 && lm.cbg_b === 0
+            && maybe_calc_probe_overhead (lm)) {
             if (pending_circles.length > 0) {
                 for (i = 0; i < pending_circles.length; i++) {
                     do_place_cbg_circle(pending_circles[i]);
@@ -752,7 +781,7 @@
         return fetch(config.lm_coarse_url)
             .then(fetch_decode_json)
             .then(function (landmarks) {
-                var probes, i, val, port, found_overhead_estimator = false;
+                var probes, i, val, port;
                 landmark_data = {};
                 n_landmarks = landmarks.length;
                 for (i = 0; i < n_landmarks; i++) {
@@ -773,14 +802,18 @@
                     };
                     if (val[2] === 0 && val[3] === 0
                         && val[4] === 0 && val[5] === 0) {
-                        found_overhead_estimator = true;
+                        overhead_estimators[val[0]] = false;
                     }
                     if (val[2] !== 0 && val[3] !== 0) {
                         place_pin("lm_coarse", val[2], val[3]);
                     }
                 }
-                if (!found_overhead_estimator) {
+                if (!Object.keys(overhead_estimators).length) {
+                    log("No overhead estimators, using 0 ms overhead");
                     probe_overhead = 0;
+                } else {
+                    log("Overhead estimators: " +
+                        JSON.stringify(Object.keys(overhead_estimators)));
                 }
                 log("Loaded " + n_landmarks + " landmarks.");
                 log("Landmark data: " + JSON.stringify(landmark_data));
@@ -788,16 +821,21 @@
     }
 
     function load_fine_landmarks() {
-        function encode_query_array(arr) {
-            return arr.map(function (el) {
-                return Object.keys(el).map(function (k) {
-                    return (encodeURIComponent(k) + '=' +
-                            encodeURIComponent(el[k]));
-                }).join('&');
-            }).join('&');
+        function fine_lm_query() {
+            var esc = encodeURIComponent,
+                circles = [],
+                i, c;
+            for (i = 0; i < coarse_circles.length; i++) {
+                c = coarse_circles[i];
+                circles.push("lat=" + esc(c.lat) +
+                             "&lon=" + esc(c.lon) +
+                             "&rad=" + esc(c.rad));
+            }
+            return config.lm_fine_url +
+                '?n=' + esc(config.n_fine_landmarks) + '&' +
+                circles.join('&');
         }
-        return fetch(config.lm_fine_url + '?n=50&' +
-                     encode_query_array(coarse_circles))
+        return fetch(fine_lm_query())
             .then(fetch_decode_json)
             .then(function (landmarks) {
                 var i, val, port, lm, new_landmarks = {};
@@ -1039,6 +1077,19 @@
                     config: config,
                     landmarks: new_landmarks
                 });
+            }).catch(function (e) {
+                log("error getting additional landmarks: " +
+                    error_to_string(e));
+                var errorbox = document.getElementById("map_error_message");
+                errorbox.innerHTML = "<p><b>Failed to get additional\
+ landmarks.</b><br>This usually means our coarse estimate of your\
+ location is nonsense, which can happen when your network is very slow.\
+</p><p>You can see more details in the “technical log” below.</p>";
+                hide_class("during_run");
+                hide_class("during_fetch_fine");
+                show_id("map_error_message");
+                phase = "complete";
+                worker.postMessage({ op: "close" });
             });
         } else {
             phase = "complete";

@@ -114,8 +114,11 @@ def continent_marks(request, config, log):
         rd = csv.DictReader(fp)
         data = [lm_entry_with_location(row) for row in rd]
 
-    # Also ask the client to ping its apparent external IP address.
+    # Also ask the client to ping its apparent external IP address
+    # and 127.0.0.1.  It uses these pingtimes to estimate connection
+    # overhead.
     data.append(x_entry_with_location(request.remote_addr))
+    data.append(x_entry_with_location("127.0.0.1"))
 
     return flask.jsonify(sorted(tuple(x) for x in set(data)))
 
@@ -168,6 +171,10 @@ def local_marks(request, config, log):
         lmsample = geometry.sample_tuples_near_shape(
             shape, (lm_entry_with_location(row) for row in rd),
             n=n, neighbor_dist=neighbor_dist)
+
+    if not lmsample:
+        # Treating this as a bad request simplifies the client.
+        bad_request("no landmarks available - empty intersection?")
 
     return flask.jsonify(sorted(tuple(x) for x in set(lmsample)))
 

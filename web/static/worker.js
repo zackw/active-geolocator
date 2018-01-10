@@ -803,9 +803,9 @@ global.performance.now = function () {
         // Probe each host all at once, but do them in a random order.
         shuffle(addrs);
 
-        // If there is an entry in the landmarks list with no location,
-        // we need to do that one first, because it's the local address
-        // and ui.js will use it to estimate overhead.
+        // If there are entries in the landmarks list with no
+        // location, we need to do them first, because ui.js wants to
+        // use those results to estimate overhead.
         for (i = 0; i < addrs.length; i++) {
             lm = landmarks[addrs[i]];
             if (lm.lat === 0 && lm.lon === 0

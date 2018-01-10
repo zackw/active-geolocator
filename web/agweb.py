@@ -20,7 +20,7 @@ def expand_relative_config_paths():
     if not base_dir: base_dir = '.'
     base_dir = os.path.abspath(os.path.join(app.instance_path, base_dir))
 
-    for k in 'REPORT_DIR', 'GPG_HOME', 'ALL_LANDMARKS', 'GEOIP_DB':
+    for k in 'REPORT_DIR', 'GPG_HOME', 'ALL_LANDMARKS', 'CONTINENT_MARKS', 'GEOIP_DB':
         app.config[k] = os.path.abspath(os.path.join(base_dir, app.config[k]))
 
 expand_relative_config_paths()
@@ -73,9 +73,18 @@ def landmark_list_locs():
     return agapi.landmark_list(flask.request, app.config, app.logger,
                                locations=True)
 
+@app.route('/api/1/continent-marks')
+def continent_marks():
+    return agapi.continent_marks(flask.request, app.config, app.logger)
+
+@app.route('/api/1/local-marks')
+def local_marks():
+    return agapi.local_marks(flask.request, app.config, app.logger)
+
 @app.route('/api/1/probe-results', methods=['POST'])
 def probe_results():
     return agapi.probe_results(flask.request, app.config, app.logger)
+
 
 # Error handling
 @app.errorhandler(400)

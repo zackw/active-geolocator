@@ -17,8 +17,16 @@
 #GPG_HOME = 'gnupg2'
 
 # A CSV file listing all the landmarks, with their locations and
-# CBG calibration parameters.
-#ALL_LANDMARKS = 'landmarks.csv'
+# CBG calibration parameters.  Expected columns are
+# addr,port,lat,lon,m,b, not necessarily in that order; additional
+# columns will be ignored.
+#ALL_LANDMARKS = 'all-landmarks.csv'
+
+# A CSV file listing a small and widely geographically spread number
+# of landmarks: shoot for less than five per continent, with all
+# continents (except Antarctica) represented.
+# Same format as ALL_LANDMARKS.
+#CONTINENT_MARKS = 'continent-marks.csv'
 
 # A geolocation database in MaxMind "MMDB" format with city-level
 # granularity.

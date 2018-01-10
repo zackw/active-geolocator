@@ -107,6 +107,10 @@ footer {
     margin-bottom: 5px;
     font-size: 12px;
 }
+#map_key > tbody {
+    vertical-align: top;
+}
+#map_key > tbody > tr > td:first-child { padding-right: 20px }
 #map_key > img { height: 12px }
 #offstage { display: none }
 

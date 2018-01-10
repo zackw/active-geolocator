@@ -28,11 +28,11 @@
 </div>
 
 <div id="map_container" class="hide">
-  <div class="during_run hide">
-    <p>The demo can take several minutes to run, and the map won’t
-      change until close to the end.</p>
-    <progress id="run_progress" value="0" max="0">0/0</progress>
-  </div>
+  <p class="during_coarse hide">Finding your continent…</p>
+  <p class="during_fetch_fine hide">Getting additional landmarks…</p>
+  <p class="during_fine hide">Narrowing down your location…</p>
+  <progress class="during_run hide"
+            id="run_progress" value="0" max="0">0/0</progress>
   <p id="after_demo" class="hide">Now that you’ve seen the demo,
     are you interested in helping us with our
     research? <button type="button" id="open_consent_form">Tell me
@@ -48,13 +48,24 @@
     <option value="nautical">nautical mile</option>
     <option value="metric" selected>metric</option>
   </select>
-  <table id="map_key" class="gl_b_or_f hide">
-    <thead><tr><th colspan="2">Your location for comparison</th></tr></thead>
-    <tbody>
-      <tr class="gl_b hide"><td><img src="{{ s('map_pin_user.png') }}"></td><td>From your browser</td></tr>
-      <tr class="gl_f hide"><td><img src="{{ s('map_pin_proxy.png') }}"></td><td>From GeoLite2-City</td></tr>
-    </tbody>
-  </table>
+  <table id="map_key"><tbody><tr>
+      <td class="lm_c_or_f"><table><thead>
+            <tr><th colspan="2">Landmarks</th></tr>
+          </thead><tbody>
+            <tr class="lm_c"><td><img src="{{ s('lm_coarse.png')
+            }}"></td><td>For continent</td></tr>
+            <tr class="lm_c"><td><img src="{{ s('lm_fine.png')
+            }}"></td><td>For refined position</td></tr>
+          </tbody></table></td>
+      <td class="gl_b_or_f hide"><table><thead>
+            <tr><th colspan="2">Your location for comparison</th></tr>
+          </thead><tbody>
+            <tr class="gl_b hide"><td><img src="{{ s('map_pin_user.png')
+            }}"></td><td>From your browser</td></tr>
+            <tr class="gl_f hide"><td><img src="{{ s('map_pin_proxy.png')
+            }}"></td><td>From GeoLite2-City</td></tr>
+      </tbody></table></td>
+  </tr></tbody></table>
 </div>
 <div class="text_container">
   <div id="browser_ok" class="hide">
@@ -293,6 +304,8 @@
      data-geoip-lat="{{ geoip_lat }}" data-geoip-lon="{{ geoip_lon }}">
   <img src="{{ s('map_pin_proxy.png') }}" id="pin_geoip">
   <img src="{{ s('map_pin_user.png') }}" id="pin_browser">
+  <img src="{{ s('lm_coarse.png') }}" id="lm_coarse">
+  <img src="{{ s('lm_fine.png') }}" id="lm_fine">
 </div>
 <!-- OpenLayers needs rAF, Element.prototype.classlist, and URL.
      ui.js needs Array.map, Date.toISOString,

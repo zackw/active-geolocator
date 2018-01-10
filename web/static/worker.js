@@ -796,17 +796,35 @@ global.performance.now = function () {
             landmarks    = opts.landmarks,
             addrs        = Object.keys(landmarks),
             probe_order  = [],
-            i;
+            i, j, lm;
 
         //postMessage({status: "log", "message": "got here R1"});
-        // In order to ensure that we do not poke the same host too
-        // frequently, we implement n_probes by reduplicating the list
-        // of probes that many times, a different permutation each
-        // time.
-        for (i = 0; i < config.n_probes; i++) {
-            shuffle(addrs);
-            probe_order.push.apply(probe_order, addrs);
+
+        // Probe each host all at once, but do them in a random order.
+        shuffle(addrs);
+
+        // If there is an entry in the landmarks list with no location,
+        // we need to do that one first, because it's the local address
+        // and ui.js will use it to estimate overhead.
+        for (i = 0; i < addrs.length; i++) {
+            lm = landmarks[addrs[i]];
+            if (lm.lat === 0 && lm.lon === 0
+                && lm.cbg_m === 0 && lm.cbg_b === 0) {
+                for (j = 0; j < config.n_probes; j++) {
+                    probe_order.push(addrs[i]);
+                }
+            }
         }
+        for (i = 0; i < addrs.length; i++) {
+            lm = landmarks[addrs[i]];
+            if (lm.lat !== 0 || lm.lon !== 0
+                || lm.cbg_m !== 0 || lm.cbg_b !== 0) {
+                for (j = 0; j < config.n_probes; j++) {
+                    probe_order.push(addrs[i]);
+                }
+            }
+        }
+
 
         //postMessage({status: "log", message: "got here R2"});
         return Promise.all(probe_order.map(function (addr) {
@@ -835,11 +853,21 @@ global.performance.now = function () {
         }));
     }
     g.onmessage = function onmessage (msg) {
+        //postMessage({status:"log", message: "got here OM/"+msg.data.op});
+        if (msg.data.op === "close") {
+            g.close();
+            return;
+        } else if (msg.data.op !== "probe") {
+            postMessage({ status: "error",
+                          error: "unknown op: " + msg.data.op });
+            g.close();
+            return;
+        }
+
         Promise.resolve(msg.data)
         .then(run)
         .then(function () {
             postMessage({ status: "done" });
-            g.close();
         })
         .catch(function (err) {
             postMessage({ status: "error", error: err });

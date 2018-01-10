@@ -27,6 +27,7 @@
         landmark_data,
         worker,
         browser_short_version,
+        phase = null,
         still_ok = true,
         loaded = false,
         load_timeout = null,
@@ -34,7 +35,10 @@
         browser_lon = null,
         geoip_lat = null,
         geoip_lon = null,
+        coarse_circles = [],
         pending_pins = [],
+        pending_circles = [],
+        probe_overhead = null,
         probe_successes = 0,
         probe_failures = 0,
 
@@ -42,8 +46,11 @@
             // Where to find static resources (relative to index.html).
             // Must end with a slash.
             static_base: "static/",
-            // URL of the list of addresses to probe.
-            landmark_url: "api/1/landmark-list-with-locations",
+            // URL of the list of addresses to probe initially.
+            lm_coarse_url: "api/1/continent-marks",
+            // URL of the list of addresses to probe to refine the location,
+            // given a set of coarse circles.
+            lm_fine_url: "api/1/local-marks",
             // URL to push results back to.
             results_url: "api/1/probe-results",
             // Time between successive probes (milliseconds)
@@ -57,12 +64,11 @@
             // Connection timeout (milliseconds)
             timeout: 10000,
             // Number of times to probe each landmark
-            n_probes: 5,
+            n_probes: 2,
 
             // CBG tuning parameters - see calibration.py for rationale
             cbg_dist_limit: 20037508, // ½ equatorial circumf. of Earth (m)
             cbg_time_limit: 273.16,   // max plausible time to cover that (ms)
-            cbg_overhead_est: 25,     // estimated overhead to subtract (ms)
 
             // Ports that XMLHttpRequest is not allowed to connect to.
             // See https://fetch.spec.whatwg.org/#port-blocking
@@ -84,20 +90,19 @@
             }
 
         },
-        // Bigger circles are drawn in lighter, more transparent colors.
-        // m = max circle radius in meters; f = fill color, rgba;
-        // s = stroke color, rgba.  20037508m is half the equatorial
-        // circumference of the Earth -- it's not possible for the
-        // target to be farther away from a landmark than that.
-        // Each step is 4x larger than the previous.  The fill and
-        // stroke colors are the darkest 4 steps of 4- and 7-class
-        // Purples, respectively, from colorbrewer2.org.
+        // Bigger regions are drawn in lighter, more transparent
+        // colors.  m = max circle radius in meters; f = fill color,
+        // rgba; s = stroke color, rgba.  10018754m is a quarter of
+        // the circumference of the Earth -- a disk with greater
+        // radius is insufficiently informative.  Each step is 4x
+        // larger than the previous.  The fill and stroke colors are
+        // the darkest 4 steps of 4- and 7-class Purples,
+        // respectively, from colorbrewer2.org.
         circle_styles = [
             { m:   313086.0625, f:[ 84, 39,143,0.20], s:[ 74, 20,134,0.9] },
             { m:  1252344.2500, f:[117,107,177,0.10], s:[106, 81,163,0.8] },
             { m:  5009377.0000, f:[158,154,200,0.05], s:[128,125,186,0.7] },
             { m: 10018754.0000, f:[203,201,226,0.01], s:[158,154,200,0.6] },
-//          { m: 20037508.0000, f:[203,201,226,0.01], s:[158,154,200,0.6] },
         ];
 
     /* Logging and error reporting */
@@ -419,11 +424,11 @@
         var label = data.label;
         var lonlat = data.lonlat;
         var coord = ol.proj.fromLonLat(lonlat);
-        log("Placing '" + label + "' pin at " +
-            JSON.stringify(lonlat) + " (projected: " +
-            JSON.stringify(coord) + ")");
+        //log("Placing '" + label + "' pin at " +
+        //    JSON.stringify(lonlat) + " (projected: " +
+        //    JSON.stringify(coord) + ")");
         world_map.addOverlay(new ol.Overlay({
-            element: d.getElementById("pin_" + label),
+            element: d.getElementById(label).cloneNode(false),
             positioning: "bottom-center",
             position: coord
         }));
@@ -444,7 +449,7 @@
             pending_pins.push(data);
     }
 
-    function place_cbg_circle(lm) {
+    function do_place_cbg_circle(lm) {
 
         function index_of_max_latitude_difference(arc) {
             var i, delta, maxdelta = 0, maxindex;
@@ -475,7 +480,7 @@
             inside = false;
             for (i = 0, j = nvert-1; i < nvert; j = i++)
                 if (((ring[i][1]>py) != (ring[j][1]>py)) &&
-	            (px < ((ring[j][0]-ring[i][0]) * (py-ring[i][1]) /
+                    (px < ((ring[j][0]-ring[i][0]) * (py-ring[i][1]) /
                            (ring[j][1]-ring[i][1]) + ring[i][0])))
                     inside = !inside;
 
@@ -490,7 +495,7 @@
 
         if ((!lm.cbg_m && !lm.cbg_b) || (!lm.lat && !lm.lon))
             return;
-        minrtt = Math.min.apply(Math, lm.rtts) - config.cbg_overhead_est;
+        minrtt = Math.min.apply(Math, lm.rtts) - probe_overhead;
         if (minrtt < 1) minrtt = 1;
 
         // Physical limits on meaningful RTT and circle radius
@@ -508,6 +513,15 @@
         }
         if (group === undefined)
             return;
+
+        // If we're in the coarse phase, capture the circles
+        // that we draw so we can send them back to the server.
+        // NB the server wants radius in kilometers.
+        if (phase === "coarse") {
+            coarse_circles.push({ "lat": lm.lat,
+                                  "lon": lm.lon,
+                                  "rad": radius/1000 });
+        }
 
         // OL3's Polygon.circular works on a sphere, not on the geoid.
         // Approximate a circle as a 60-sided polygon.
@@ -639,6 +653,24 @@
         cbg_circle_src.changed();
     }
 
+    function place_cbg_circle(lm) {
+        var i;
+        if (lm.lat === 0 && lm.lon === 0 && lm.cbg_m === 0 && lm.cbg_b === 0) {
+            probe_overhead = Math.min.apply(Math, lm.rtts);
+            log("estimated connection overhead: " + probe_overhead);
+            if (pending_circles.length > 0) {
+                for (i = 0; i < pending_circles.length; i++) {
+                    do_place_cbg_circle(pending_circles[i]);
+                }
+                pending_circles.length = 0;
+            }
+        } else if (probe_overhead === null) {
+            pending_circles.push(lm);
+        } else {
+            do_place_cbg_circle(lm);
+        }
+    }
+
     /* Core experiment (more in worker.js) */
     function get_browser_location() {
         if (!geo) {
@@ -652,7 +684,7 @@
                 browser_lon = pos.coords.longitude;
                 log("location from browser: " + pos.coords.latitude +
                     ", " + pos.coords.longitude);
-                place_pin("browser", browser_lat, browser_lon);
+                place_pin("pin_browser", browser_lat, browser_lon);
                 show_class("gl_b_or_f");
                 show_class("gl_b");
                 if (geoip_lat === null) {
@@ -703,7 +735,7 @@
             geoip_lon = lon;
             log("location from geoip: " + geoip_lat +
                 ", " + geoip_lon);
-            place_pin("geoip", geoip_lat, geoip_lon);
+            place_pin("pin_geoip", geoip_lat, geoip_lon);
             show_class("gl_b_or_f");
             show_class("gl_f");
             if (browser_lat === null) {
@@ -716,11 +748,11 @@
     }
 
 
-    function load_landmarks() {
-        return fetch(config.landmark_url)
+    function load_coarse_landmarks() {
+        return fetch(config.lm_coarse_url)
             .then(fetch_decode_json)
             .then(function (landmarks) {
-                var probes, i, val, port;
+                var probes, i, val, port, found_overhead_estimator = false;
                 landmark_data = {};
                 n_landmarks = landmarks.length;
                 for (i = 0; i < n_landmarks; i++) {
@@ -739,9 +771,63 @@
                         'cbg_b': val[5],
                         'rtts': []
                     };
+                    if (val[2] === 0 && val[3] === 0
+                        && val[4] === 0 && val[5] === 0) {
+                        found_overhead_estimator = true;
+                    }
+                    if (val[2] !== 0 && val[3] !== 0) {
+                        place_pin("lm_coarse", val[2], val[3]);
+                    }
+                }
+                if (!found_overhead_estimator) {
+                    probe_overhead = 0;
                 }
                 log("Loaded " + n_landmarks + " landmarks.");
                 log("Landmark data: " + JSON.stringify(landmark_data));
+            });
+    }
+
+    function load_fine_landmarks() {
+        function encode_query_array(arr) {
+            return arr.map(function (el) {
+                return Object.keys(el).map(function (k) {
+                    return (encodeURIComponent(k) + '=' +
+                            encodeURIComponent(el[k]));
+                }).join('&');
+            }).join('&');
+        }
+        return fetch(config.lm_fine_url + '?n=50&' +
+                     encode_query_array(coarse_circles))
+            .then(fetch_decode_json)
+            .then(function (landmarks) {
+                var i, val, port, lm, new_landmarks = {};
+                for (i = 0; i < landmarks.length; i++) {
+                    val = landmarks[i];
+                    if (val[0] in landmark_data) {
+                        continue; // we already did this one
+                    }
+                    n_landmarks++;
+                    port = val[1];
+                    if (config.blocked_ports[port]) {
+                        log("cannot use port " + port + " for " + val[0]);
+                        port = 80;
+                    }
+                    lm = {
+                        'addr': val[0],
+                        'port': port,
+                        'lat':  val[2],
+                        'lon':  val[3],
+                        'cbg_m': val[4],
+                        'cbg_b': val[5],
+                        'rtts': []
+                    };
+                    landmark_data[val[0]] = lm;
+                    new_landmarks[val[0]] = lm;
+                    if (val[2] !== 0 && val[3] !== 0) {
+                        place_pin("lm_fine", val[2], val[3]);
+                    }
+                }
+                return new_landmarks;
             });
     }
 
@@ -782,6 +868,7 @@
             case "rtt": {
                 progress_bar_tick();
                 var lm = landmark_data[msg.data.addr];
+                //log("lm: " + msg.data.addr + " elapsed: " + msg.data.elapsed);
                 lm.rtts.push(msg.data.elapsed);
                 if (lm.rtts.length == config.n_probes)
                     place_cbg_circle(lm);
@@ -823,11 +910,17 @@
     }
 
     function run_experiment(ev) {
+        ev.preventDefault();
+        phase = "coarse";
         hide_id("go");
         show_class("during_run");
-        ev.preventDefault();
+        show_class("during_coarse");
         progress_bar_begin(n_landmarks * config.n_probes);
-        worker.postMessage({ config: config, landmarks: landmark_data });
+        worker.postMessage({
+            op: "probe",
+            config: config,
+            landmarks: landmark_data
+        });
     }
 
     /* Reporting */
@@ -890,6 +983,7 @@
             parallel:  config.parallel,
             timeout:   config.timeout,
             n_probes:  config.n_probes,
+            overhead:  probe_overhead,
             latitude:  +d.getElementById("client-lat").value,
             longitude: +d.getElementById("client-lon").value,
             browser:   browser_short_version
@@ -930,8 +1024,29 @@
     }
 
     function finish_experiment() {
-        hide_class("during_run");
-        show_id("after_demo");
+        if (phase === "coarse") {
+            hide_class("during_coarse");
+            show_class("during_fetch_fine");
+            phase = "fine";
+            load_fine_landmarks().then(function (new_landmarks) {
+                phase = "fine";
+                hide_class("during_fetch_fine");
+                show_class("during_fine");
+                progress_bar_begin(Object.keys(new_landmarks).length
+                                   * config.n_probes);
+                worker.postMessage({
+                    op: "probe",
+                    config: config,
+                    landmarks: new_landmarks
+                });
+            });
+        } else {
+            phase = "complete";
+            worker.postMessage({ op: "close" });
+            hide_class("during_run");
+            hide_class("during_fine");
+            show_id("after_demo");
+        }
     }
 
     function post_results() {
@@ -1000,7 +1115,7 @@
         get_browser_location();
         get_geoip_location();
         Promise.all([
-            load_landmarks(),
+            load_coarse_landmarks(),
             load_worker(),
             load_map(),
         ])

@@ -71,7 +71,9 @@
 
             // CBG tuning parameters - see calibration.py for rationale
             cbg_dist_limit: 20037508, // ½ equatorial circumf. of Earth (m)
-            cbg_time_limit: 273.16,   // max plausible time to cover that (ms)
+            cbg_time_limit: 477.48,   // max plausible time to cover that (ms)
+            cbg_coarse_speed: 199.86, // 2/3c ≈ cable transmission speed (km/ms)
+            cbg_coarse_delay: 0,      // first-hop delay assumed to be zero
 
             // Overhead limit: if the connection overhead is bigger than
             // this many milliseconds, we don't believe it.  Needs tuning.
@@ -498,16 +500,28 @@
         function project_ll(val) { return ol.proj.fromLonLat(val); }
 
         var minrtt, radius, ring_coords, i, p, pt, prev_pt,
-            polys, contained, origin, group;
+            polys, contained, origin, group, cbg_m, cbg_b;
 
-        if ((!lm.cbg_m && !lm.cbg_b) || (!lm.lat && !lm.lon))
+        if (!lm.lat || !lm.lon)
             return;
+        if (phase === "coarse") {
+            // The factor of 2 converts round-trip time to one-way distance.
+            // The factor of 1000 converts km/ms to m/ms.
+            cbg_m = config.cbg_coarse_speed * 1000 / 2;
+            cbg_b = -config.cbg_coarse_delay * cbg_m;
+        } else {
+            // zero is a legitimate value for cbg_b
+            if (!lm.cbg_m)
+                return;
+            cbg_m = lm.cbg_m;
+            cbg_b = lm.cbg_b;
+        }
         minrtt = Math.min.apply(Math, lm.rtts) - probe_overhead;
         if (minrtt < 1) minrtt = 1;
 
         // Physical limits on meaningful RTT and circle radius
         if (minrtt > config.cbg_time_limit) return;
-        radius = lm.cbg_m * minrtt + lm.cbg_b;
+        radius = cbg_m * minrtt + cbg_b;
         if (radius <= 0) return;
         radius = Math.min(radius, config.cbg_dist_limit);
 

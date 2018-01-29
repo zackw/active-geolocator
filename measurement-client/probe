@@ -3,10 +3,12 @@
 from __future__ import division
 
 import argparse
+import collections
 import contextlib
 import ctypes
 import datetime
 import errno
+import itertools
 import json
 import mmap
 import os
@@ -33,14 +35,14 @@ except ImportError:
 try:
     from urllib.error import URLError
     from urllib.request import urlopen
-    from urllib.parse import urlencode, urlsplit
+    from urllib.parse import urlencode, urlsplit, urljoin
 except ImportError:
     from urllib2 import URLError
     from urllib2 import urlopen as _urlopen
     def urlopen(*a, **k):
         return contextlib.closing(_urlopen(*a, **k))
     from urllib import urlencode
-    from urlparse import urlsplit
+    from urlparse import urlsplit, urljoin
 
 # We have problems with DNS resolution failing for the reports server,
 # possibly wasting hours of effort, so we monkey-patch
@@ -63,7 +65,7 @@ def warm_dns_cache_1(*args):
     global dns_cache
     if args in dns_cache: return
     retries = 0
-    sys.stderr.write("Looking up {}...".format(args[0]))
+    sys.stderr.write("Looking up {}:{}...".format(args[0], args[1]))
     sys.stderr.flush()
     while True:
         try:
@@ -81,7 +83,7 @@ def warm_dns_cache_1(*args):
             time.sleep(5)
 
 def warm_dns_cache(cfg):
-    for url in (cfg.landmark_url, cfg.results_url):
+    for url in (cfg.lm_coarse_url, cfg.lm_fine_url, cfg.results_url):
         s = urlsplit(url)
         if s.scheme == 'https':
             warm_dns_cache_1(s.hostname, s.port or 443, 0, 1)
@@ -187,6 +189,11 @@ else:
     # if we don't have shm_open, a temporary file will do
     from tempfile import TemporaryFile as MemorySegment
 
+AddrTuple = collections.namedtuple("AddrTuple",
+                                   ("host", "port",
+                                    "lat", "lon",
+                                    "cbg_m", "cbg_b"))
+
 class ConnBuffer:
     def __init__(self, addrs, spacing, timeout):
         self.addrs   = addrs
@@ -236,9 +243,9 @@ class ConnBuffer:
         # generate them in Python.
         serial = {}
         sno = 0
-        for host, port in self.addrs:
-            if host not in serial:
-                serial[host] = sno
+        for addr in self.addrs:
+            if addr.host not in serial:
+                serial[addr.host] = sno
                 sno += 1
 
         self.hform.pack_into(self.seg_map, 0,
@@ -248,11 +255,11 @@ class ConnBuffer:
                              0)
 
         offset = self.hform.size
-        for host, port in self.addrs:
-            addr = socket.inet_aton(host)
-            port = socket.htons(port)
+        for addr in self.addrs:
+            ip = socket.inet_aton(addr.host)
+            port = socket.htons(addr.port)
             self.cform.pack_into(self.seg_map, offset,
-                                 serial[host], addr, port, 0, 0)
+                                 serial[addr.host], ip, port, 0, 0)
             offset += self.cform.size
 
     def decode_results(self):
@@ -272,13 +279,16 @@ class ConnBuffer:
 
         return results
 
-def report_results(cfg, results):
+def report_results(cfg, results, coarse_circles):
     data = dict(vars(cfg))
     # We don't need to report all of the configuration parameters.
-    del data["landmark_url"]
+    del data["lm_coarse_url"]
+    del data["lm_fine_url"]
+    del data["server_url"]
     del data["results_url"]
     del data["config"]
     del data["core"]
+    del data["no_report"]
     if data["location_unknown"]:
         del data["latitude"]
         del data["longitude"]
@@ -297,6 +307,7 @@ def report_results(cfg, results):
         del data["proxy_location_unknown"]
 
     data["results"] = results
+    data["circles"] = coarse_circles
     now = datetime.datetime.utcnow()
     data["timestamp"] = now.isoformat()
     blob = json.dumps(data, separators=(',', ':')).encode('utf-8')
@@ -323,6 +334,9 @@ def report_results(cfg, results):
         sys.stderr.write(
             "Unable to record data locally (too many local records already); "
             "continuing.\n")
+
+    if cfg.no_report:
+        return
 
     # Push the data to the server.
     try:
@@ -375,11 +389,12 @@ def finished_message(ccode):
 
     sys.stderr.write("\nThank you for your assistance.\n")
 
-def perform_probes(cfg, addresses):
-    """Make a connection to each of the ADDRESSES, in order, and measure
-    the time for connect(2) to either succeed or fail -- we don't care
-    which.  Each element of the iterable ADDRESSES should be a 2-tuple
-    (addr, port) as returned by socket.getaddrinfo()."""
+def perform_probes(cfg, landmarks):
+    """Make a connection to each of the LANDMARKS, in order, and measure
+       the time for connect(2) to either succeed or fail -- we don't
+       care which.
+    """
+    addresses = choose_probe_order(cfg, landmarks)
 
     with ConnBuffer(addresses, cfg.spacing, cfg.timeout) as cb:
 
@@ -389,7 +404,7 @@ def perform_probes(cfg, addresses):
             cmd.append(str(cfg.socks5[1]))
 
         resource.setrlimit(resource.RLIMIT_NOFILE,
-                           (min(cfg.n_landmarks, cfg.parallel) + 3,
+                           (min(len(landmarks), cfg.parallel) + 3,
                             cfg.max_parallel))
         cycles = 0
         while cycles < 5:
@@ -420,27 +435,87 @@ def perform_probes(cfg, addresses):
         return cb.decode_results()
 
 def choose_probe_order(cfg, addresses):
-    """Choose a randomized probe order for the ADDRESSES.  This both expands
-    the list to include CFG.nprobes copies of each address, and shuffles it.
-    It tries not to put multiple copies of the same address close to each
-    other."""
+    """Choose a randomized probe order for the ADDRESSES.  This both
+       expands the list to include CFG.n_probes copies of each address,
+       and shuffles it.
+    """
+
+    # We probe each host all at once, but we do them in a random order.
+    # However, if one of the addresses has no location, we need to do
+    # that one first, because it's the local address and we will use
+    # that to estimate overhead.
+    no_loc = []
+    with_loc = []
+    for addr in addresses:
+        if abs(addr.lat) < 0.5 and abs(addr.lon) < 0.5:
+            no_loc.append(addr)
+        else:
+            with_loc.append(addr)
+
+    random.shuffle(no_loc)
+    random.shuffle(with_loc)
 
     rv = []
-    for _ in range(cfg.nprobes):
-        random.shuffle(addresses)
-        rv.extend(addresses)
+    for addr in itertools.chain(no_loc, with_loc):
+        for _ in range(cfg.n_probes):
+            rv.append(addr)
 
     return rv
+
+def compute_coarse_circles(cfg, landmarks, results):
+    # Get the minimum RTT to each landmark.
+    rtt_by_addr = collections.defaultdict(list)
+    for r in results:
+        rtt_by_addr[r[0]].append(r[3])
+    minrtt_by_addr = { a: min(v) for a,v in rtt_by_addr.items() }
+
+    probe_overhead = 0
+    for lm in landmarks:
+        if (abs(lm.lat) < 0.5 and abs(lm.lat) < 0.5
+            and 0 < minrtt_by_addr[lm.host] < cfg.overhead_limit):
+            probe_overhead = max(probe_overhead, minrtt_by_addr[lm.host])
+
+    setattr(cfg, "overhead", probe_overhead)
+
+    # The factor of 2 converts round-trip time to one-way distance.
+    # The factor of 1000 converts km/ms to m/ms.
+    cbg_m = cfg.cbg_coarse_speed * 1000 / 2
+    cbg_b = -cfg.cbg_coarse_delay * cbg_m
+
+    circles = []
+    for lm in landmarks:
+        if abs(lm.lat) < 0.5 and abs(lm.lon) < 0.5:
+            continue
+        minrtt = minrtt_by_addr[lm.host]
+        if minrtt > cfg.cbg_time_limit:
+            continue
+        radius = cbg_m * (minrtt - probe_overhead) + cbg_b
+        if not (0 < radius < cfg.cbg_dist_limit):
+            continue
+        # The server wants the radius in km.
+        circles.append((lm.lat, lm.lon, radius/1000))
+
+    circles.sort(key=lambda x: (x[2], x[0], x[1]))
+    return circles
+
 
 def validate_landmark_list(landmarks):
     def v1(item):
         try:
-            if len(item) != 2:
+            if len(item) != 6:
                 raise ValueError("wrong length")
-            return socket.getaddrinfo(
-                item[0], item[1], 0, socket.SOCK_STREAM, 0, 0)[0][4]
+            r_host, r_port = socket.getaddrinfo(
+                item[0], item[1],
+                socket.AF_INET, socket.SOCK_STREAM, 0, 0)[0][4]
+            return AddrTuple(
+                r_host, r_port,
+                item[2], item[3], item[4], item[5])
 
         except Exception as e:
+            if (isinstance(e, socket.gaierror) and
+                e.args[0] == socket.EAI_ADDRFAMILY):
+                return None
+
             raise type(e)("validating landmark list: item {!r}: {}"
                           .format(item, e))
 
@@ -448,22 +523,34 @@ def validate_landmark_list(landmarks):
         raise TypeError("landmark list was not a list, but {!r}"
                         .format(landmarks))
 
-    return [v1(item) for item in landmarks]
+    return [addr for addr in (v1(item) for item in landmarks)
+            if addr is not None]
 
-def get_landmark_list(cfg):
-    """Read addresses to probe from cfg.landmark_url."""
+def get_landmark_list(cfg, circles=None):
+    """Read addresses to probe from the server."""
     try:
-        sys.stderr.write("Retrieving landmark list...")
+        if circles is None:
+            sys.stderr.write("Retrieving continent-level landmarks...")
+            landmark_url = cfg.lm_coarse_url
+        else:
+            sys.stderr.write("Retrieving second stage landmarks...")
+            landmark_url = cfg.lm_fine_url
+            landmark_url += '?n={}&'.format(cfg.n_fine_landmarks)
+            landmark_url += '&'.join(
+                urlencode([('lat', format(x[0], "6f")),
+                           ('lon', format(x[1], "6f")),
+                           ('rad', format(x[2], "3f"))])
+                for x in circles)
+
         sys.stderr.flush()
-        with urlopen(cfg.landmark_url) as f:
+        with urlopen(landmark_url) as f:
             landmarks = validate_landmark_list(
                 json.loads(f.read().decode("utf-8")))
             sys.stderr.write("ok, {} landmarks\n".format(len(landmarks)))
-            setattr(cfg, "n_landmarks", len(landmarks))
             return landmarks
 
     except (URLError, TypeError, ValueError, UnicodeError) as e:
-        sys.stderr.write("\n{}:\n   {}\n".format(cfg.landmark_url, e))
+        sys.stderr.write("\n{}:\n   {}\n".format(landmark_url, e))
         sys.exit(1)
 
 def parse_local_config_file(args):
@@ -477,12 +564,30 @@ def parse_local_config_file(args):
             p = configparser.RawConfigParser()
             p.readfp(f)
 
-            setattr(args, "landmark_url", p.get("probe", "landmark_url"))
-            setattr(args, "results_url", p.get("probe", "results_url"))
-            setattr(args, "spacing", p.getfloat("probe", "spacing"))
-            setattr(args, "parallel", p.getint("probe", "parallel"))
-            setattr(args, "timeout", p.getfloat("probe", "timeout"))
-            setattr(args, "nprobes", p.getint("probe", "n_probes"))
+            getstr = lambda p, k: p.get("probe", k)
+            getint = lambda p, k: p.getint("probe", k)
+            getfloat = lambda p, k: p.getfloat("probe", k)
+            geturl = lambda p, k: urljoin(args.server_url, p.get("probe", k))
+
+            config_keys = [
+                ("server_url", getstr),
+                ("lm_coarse_url", geturl),
+                ("lm_fine_url", geturl),
+                ("results_url", geturl),
+                ("spacing", getfloat),
+                ("parallel", getint),
+                ("timeout", getfloat),
+                ("n_probes", getint),
+                ("n_fine_landmarks", getint),
+                ("cbg_dist_limit", getfloat),
+                ("cbg_time_limit", getfloat),
+                ("cbg_coarse_speed", getfloat),
+                ("cbg_coarse_delay", getfloat),
+                ("overhead_limit", getfloat),
+            ]
+            for k, getter in config_keys:
+                setattr(args, k, getter(p, k))
+
 
             # Fewer than one connection at a time obviously doesn't
             # work.  The upper limit is the kernel-imposed limit on
@@ -508,9 +613,9 @@ def parse_local_config_file(args):
                 raise ValueError("'spacing' must be from 1 to timeout")
 
             # Less than one probe per landmark doesn't make sense, and more
-            # than 20 is unlikely to be helpful/
-            if args.nprobes < 1 or args.nprobes > 20:
-                raise ValueError("'nprobes' must be from 1 to 20")
+            # than 20 is unlikely to be helpful.
+            if args.n_probes < 1 or args.n_probes > 20:
+                raise ValueError("'n_probes' must be from 1 to 20")
 
             return args
 
@@ -554,6 +659,9 @@ def parse_command_line():
     ap.add_argument("--no-publication", action="store_true",
                     help="If the database is ever published, don't include "
                     "these measurements.")
+    ap.add_argument("--no-report", action="store_true",
+                    help="Do not report these results to the database, "
+                    "just record them locally.")
 
     args = ap.parse_args()
     if ((not args.location_unknown
@@ -600,9 +708,20 @@ def main():
     args = parse_command_line()
     cfg = parse_local_config_file(args)
     warm_dns_cache(cfg)
-    landmarks = get_landmark_list(cfg)
-    addrs = choose_probe_order(cfg, landmarks)
-    results = perform_probes(cfg, addrs)
-    report_results(cfg, results)
+    coarse_landmarks = get_landmark_list(cfg)
+    coarse_results = perform_probes(cfg, coarse_landmarks)
+    coarse_circles = compute_coarse_circles(cfg, coarse_landmarks,
+                                            coarse_results)
+
+    fine_landmarks = get_landmark_list(cfg, circles=coarse_circles)
+    fine_results = perform_probes(cfg, fine_landmarks)
+
+    # Stuff the total number of landmarks into the 'cfg' object in
+    # order to report it to the server (which will log it
+    # independently of the list of observations).
+    setattr(cfg, "n_landmarks", len(coarse_landmarks) + len(fine_landmarks))
+
+    fine_results.extend(coarse_results)
+    report_results(cfg, fine_results, coarse_circles)
 
 main()

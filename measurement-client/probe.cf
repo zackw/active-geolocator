@@ -1,15 +1,43 @@
 [probe]
-# URL of the list of addresses to probe.
-landmark_url=https://research.owlfolio.org/active-geo/api/1/landmark-list
-# URL to push results back to.
-results_url=https://research.owlfolio.org/active-geo/api/1/probe-results
-# Time between successive probes (milliseconds)
-spacing=10
-# Maximum number of concurrent probes to perform (0 = no limit)
-# This is clipped to the length of the landmark list, to reduce the odds
-# of hitting the same server more than once at a time.
-parallel=0
+# Base URL of the measurement server.
+server_url = https://research.owlfolio.org/active-geo/api/1/
+
+# URL of the list of addresses to probe initially.
+# Relative to server_url.
+lm_coarse_url = continent-marks
+
+# URL of the list of addresses to probe to refine the location,
+# given a set of coarse circles.  Relative to server_url.
+lm_fine_url = local-marks
+
+# URL to push results back to.  Relative to server_url.
+results_url = probe-results
+
+# Time between successive probes (milliseconds).
+spacing = 10
+
+# Maximum number of concurrent probes to perform (0 = no limit).
+parallel = 9
+
 # Connection timeout (milliseconds)
-timeout=1000
+timeout = 1000
+
 # Number of times to probe each landmark
-n_probes=10
+n_probes = 3
+
+# Number of fine landmarks to request
+n_fine_landmarks = 50
+
+# Overhead limit: if the connection overhead is measured to be bigger than
+# this many milliseconds, we don't believe it.  Needs tuning.
+overhead_limit = 100
+
+## CBG tuning parameters - see calibration.py for rationale
+# ½ equatorial circumf. of Earth (m)
+cbg_dist_limit = 20037508
+# maximum meaningful RTT to that distance (ms)
+cbg_time_limit = 477.48
+# 2/3c ≈ cable transmission speed (km/ms)
+cbg_coarse_speed = 199.86
+# first-hop delay assumed to be zero (ms)
+cbg_coarse_delay = 0

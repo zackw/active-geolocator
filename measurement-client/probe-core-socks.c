@@ -220,7 +220,7 @@ next_action(struct conn_data *cd, struct conn_internal *ci, int fd,
   finished_err_already_set:
     cd->elapsed = clock_monotonic() - ci->begin;
     ci->state = FINISHED;
-
+    /* FALLTHRU */
   case FINISHED:
     /* Shouldn't ever actually branch to the case label, but we can
        fall through from above. */

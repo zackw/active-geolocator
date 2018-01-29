@@ -32,12 +32,12 @@ CREATE INDEX regions__box ON regions USING GIST(box);
 CREATE TABLE landmarks (
   probeid  INTEGER          NOT NULL PRIMARY KEY,
   anchorid INTEGER          UNIQUE,   -- NULL if not an anchor
-  addr     INET,            NOT NULL, -- there can be more than one probe per address
-  usable   BOOLEAN,         NOT NULL, -- can we ping it?
+  addr     INET             NOT NULL, -- there can be more than one probe per address
+  usable   BOOLEAN          NOT NULL, -- can we ping it?
   location GEOGRAPHY(POINT) NOT NULL,
   region   INTEGER          REFERENCES regions(id),
   cbg_m    REAL,
-  cbg_b    REAL,
+  cbg_b    REAL
 );
 CREATE INDEX landmarks_addr_key ON landmarks(addr);
 CREATE INDEX landmarks_location_key ON landmarks USING GIST(location);

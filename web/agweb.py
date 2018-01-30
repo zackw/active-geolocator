@@ -9,6 +9,7 @@ from jinja2 import TemplateNotFound
 from werkzeug.exceptions import HTTPException
 
 import agapi
+import database
 import ipgeo
 
 app = flask.Flask(__name__, instance_relative_config=True)
@@ -20,12 +21,18 @@ def expand_relative_config_paths():
     if not base_dir: base_dir = '.'
     base_dir = os.path.abspath(os.path.join(app.instance_path, base_dir))
 
-    for k in 'REPORT_DIR', 'GPG_HOME', 'ALL_LANDMARKS', 'CONTINENT_MARKS', 'GEOIP_DB':
+    for k in 'REPORT_DIR', 'GPG_HOME', 'GEOIP_DB':
         app.config[k] = os.path.abspath(os.path.join(base_dir, app.config[k]))
 
 expand_relative_config_paths()
 
-geodb = ipgeo.GeoLite2City(app.config['GEOIP_DB'])
+geodb  = ipgeo.GeoLite2City(app.config['GEOIP_DB'])
+lmdb = database.ThreadedExpiringConnectionPool(
+    minconn = app.config['LANDMARK_DB_MINCONN'],
+    maxconn = app.config['LANDMARK_DB_MAXCONN'],
+    max_idle_time = app.config['LANDMARK_DB_MAXIDLE'],
+    **app.config['LANDMARK_DB']
+)
 
 @app.context_processor
 def augment_template_context():
@@ -66,24 +73,24 @@ def page(page):
 @app.route('/api/1/landmark-list')
 def landmark_list():
     return agapi.landmark_list(flask.request, app.config, app.logger,
-                               locations=False)
+                               lmdb, locations=False)
 
 @app.route('/api/1/landmark-list-with-locations')
 def landmark_list_locs():
     return agapi.landmark_list(flask.request, app.config, app.logger,
-                               locations=True)
+                               lmdb, locations=True)
 
 @app.route('/api/1/continent-marks')
 def continent_marks():
-    return agapi.continent_marks(flask.request, app.config, app.logger)
+    return agapi.continent_marks(flask.request, app.config, app.logger, lmdb)
 
 @app.route('/api/1/local-marks')
 def local_marks():
-    return agapi.local_marks(flask.request, app.config, app.logger)
+    return agapi.local_marks(flask.request, app.config, app.logger, lmdb)
 
 @app.route('/api/1/probe-results', methods=['POST'])
 def probe_results():
-    return agapi.probe_results(flask.request, app.config, app.logger)
+    return agapi.probe_results(flask.request, app.config, app.logger, lmdb)
 
 
 # Error handling

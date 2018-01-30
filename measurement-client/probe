@@ -479,8 +479,8 @@ def compute_coarse_circles(cfg, landmarks, results):
 
     # The factor of 2 converts round-trip time to one-way distance.
     # The factor of 1000 converts km/ms to m/ms.
-    cbg_m = cfg.cbg_coarse_speed * 1000 / 2
-    cbg_b = -cfg.cbg_coarse_delay * cbg_m
+    cbg_default_m = cfg.cbg_default_speed * 1000 / 2
+    cbg_default_b = -cfg.cbg_default_delay * cbg_m
 
     circles = []
     for lm in landmarks:
@@ -489,6 +489,12 @@ def compute_coarse_circles(cfg, landmarks, results):
         minrtt = minrtt_by_addr[lm.host]
         if minrtt > cfg.cbg_time_limit:
             continue
+        if lm.cbg_m:
+            cbg_m = lm.cbg_m
+            cbg_b = lm.cbg_b
+        else:
+            cbg_m = cbg_default_m
+            cbg_b = cbg_default_b
         radius = cbg_m * (minrtt - probe_overhead) + cbg_b
         if not (0 < radius < cfg.cbg_dist_limit):
             continue
@@ -581,8 +587,8 @@ def parse_local_config_file(args):
                 ("n_fine_landmarks", getint),
                 ("cbg_dist_limit", getfloat),
                 ("cbg_time_limit", getfloat),
-                ("cbg_coarse_speed", getfloat),
-                ("cbg_coarse_delay", getfloat),
+                ("cbg_default_speed", getfloat),
+                ("cbg_default_delay", getfloat),
                 ("overhead_limit", getfloat),
             ]
             for k, getter in config_keys:

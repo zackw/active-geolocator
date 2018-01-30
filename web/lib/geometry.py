@@ -143,3 +143,18 @@ def sample_tuples_near_shape(shape, tuples, *, n=100, neighbor_dist=100):
                 return subsample
             population = rest
             shape = shape.buffer(5)
+
+WGS84geod = pyproj.Geod(ellps='WGS84')
+
+def sample_more_tuples_into(sample_out, n, neighbor_dist, tuples):
+    tuples = list(tuples)
+    random.shuffle(tuples)
+    for cand in tuples:
+        if len(sample_out) >= n:
+            break
+        for other in sample_out:
+            _, _, dist = WGS84geod.inv(other.lon, other.lat, cand.lon, cand.lat)
+            if dist < neighbor_dist:
+                break
+        else:
+            sample_out.append(cand)

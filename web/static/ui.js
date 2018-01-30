@@ -67,13 +67,13 @@
             // Number of times to probe each landmark
             n_probes: 2,
             // Number of fine landmarks to request
-            n_fine_landmarks: 50,
+            n_fine_landmarks: 25,
 
             // CBG tuning parameters - see calibration.py for rationale
             cbg_dist_limit: 20037508, // ½ equatorial circumf. of Earth (m)
             cbg_time_limit: 477.48,   // max plausible time to cover that (ms)
-            cbg_coarse_speed: 199.86, // 2/3c ≈ cable transmission speed (km/ms)
-            cbg_coarse_delay: 0,      // first-hop delay assumed to be zero
+            cbg_default_speed: 199.86, // 2/3c ≈ cable transmission speed (km/ms)
+            cbg_default_delay: 0,      // first-hop delay assumed to be zero
 
             // Overhead limit: if the connection overhead is bigger than
             // this many milliseconds, we don't believe it.  Needs tuning.
@@ -504,15 +504,12 @@
 
         if (!lm.lat || !lm.lon)
             return;
-        if (phase === "coarse") {
+        if (!lm.cbg_m) {
             // The factor of 2 converts round-trip time to one-way distance.
             // The factor of 1000 converts km/ms to m/ms.
-            cbg_m = config.cbg_coarse_speed * 1000 / 2;
-            cbg_b = -config.cbg_coarse_delay * cbg_m;
+            cbg_m = config.cbg_default_speed * 1000 / 2;
+            cbg_b = -config.cbg_default_delay * cbg_m;
         } else {
-            // zero is a legitimate value for cbg_b
-            if (!lm.cbg_m)
-                return;
             cbg_m = lm.cbg_m;
             cbg_b = lm.cbg_b;
         }

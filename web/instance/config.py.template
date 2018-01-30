@@ -16,18 +16,25 @@
 # Directory containing GnuPG keyrings and configuration.
 #GPG_HOME = 'gnupg2'
 
-# A CSV file listing all the landmarks, with their locations and
-# CBG calibration parameters.  Expected columns are
-# addr,port,lat,lon,m,b, not necessarily in that order; additional
-# columns will be ignored.
-#ALL_LANDMARKS = 'all-landmarks.csv'
-
-# A CSV file listing a small and widely geographically spread number
-# of landmarks: shoot for less than five per continent, with all
-# continents (except Antarctica) represented.
-# Same format as ALL_LANDMARKS.
-#CONTINENT_MARKS = 'continent-marks.csv'
-
 # A geolocation database in MaxMind "MMDB" format with city-level
 # granularity.
 #GEOIP_DB = '/var/lib/GeoIP/GeoLite2-City.mmdb'
+
+# Connection parameters for a PostgreSQL database initialized
+# according to db/agweb_schema.sql and periodically updated by
+# scripts/update_ripe_probes.py.  The PostGIS and ORAFCE extensions
+# are required.  (ORAFCE is only used for the MEDIAN aggregate
+# function.)  At present, the web application only needs SELECT
+# privileges on the tables defined in agweb_schema.sql.
+#
+# Must be a dictionary of keyword arguments to pass to psycopg2.connect.
+#LANDMARK_DB = { 'dbname': 'landmark_db' }
+
+# Minimum number of persistent database connections to maintain.
+#LANDMARK_DB_MINCONN = 1
+
+# Maximum number of persistent database connections to maintain.
+#LANDMARK_DB_MAXCONN = 10
+
+# If a database connection is idle for this many seconds, shut it down.
+#LANDMARK_DB_MAXIDLE = 600

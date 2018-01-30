@@ -26,7 +26,7 @@ timeout = 1000
 n_probes = 3
 
 # Number of fine landmarks to request
-n_fine_landmarks = 50
+n_fine_landmarks = 25
 
 # Overhead limit: if the connection overhead is measured to be bigger than
 # this many milliseconds, we don't believe it.  Needs tuning.
@@ -38,6 +38,6 @@ cbg_dist_limit = 20037508
 # maximum meaningful RTT to that distance (ms)
 cbg_time_limit = 477.48
 # 2/3c ≈ cable transmission speed (km/ms)
-cbg_coarse_speed = 199.86
+cbg_default_speed = 199.86
 # first-hop delay assumed to be zero (ms)
-cbg_coarse_delay = 0
+cbg_default_delay = 0

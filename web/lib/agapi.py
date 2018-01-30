@@ -12,6 +12,8 @@ import subprocess
 import tempfile
 
 import flask
+
+from database import get_db_cursor
 import geometry
 
 # Utility functions
@@ -71,7 +73,7 @@ def x_entry_with_location(addr):
 def x_entry_no_location(addr):
     return LandmarkBare(addr=addr, port=80)
 
-def landmark_list(request, config, log, locations):
+def landmark_list(request, config, log, db, locations):
     """(Previous API generation) Return the complete list of
        available landmarks, optionally with locations and CBG
        calibration parameters.
@@ -84,9 +86,19 @@ def landmark_list(request, config, log, locations):
         lm_entry = lm_entry_no_location
         x_entry = x_entry_no_location
 
-    with open(config['ALL_LANDMARKS']) as fp:
-        rd = csv.DictReader(fp)
-        data = [lm_entry(row) for row in rd]
+    with get_db_cursor(db) as cur:
+        # For the legacy API, return the complete set of usable
+        # RIPE anchors.  If an anchor does not have a CBG calibration,
+        # use the CBG baseline (2/3c, no fixed delay).
+        cur.execute("""
+            SELECT addr, 80 AS port,
+                   ST_Y(location::GEOMETRY) as lat,
+                   ST_X(location::GEOMETRY) as lon,
+                   COALESCE(cbg_m, 100000) AS m, COALESCE(cbg_b, 0) AS b
+              FROM landmarks
+             WHERE usable AND anchorid IS NOT NULL
+        """)
+        data = [lm_entry(row) for row in cur]
 
     # In addition, we ask the client to ping 127.0.0.1, its apparent
     # external IP address, a guess at its gateway address (last
@@ -105,14 +117,40 @@ def landmark_list(request, config, log, locations):
 
     return flask.jsonify(sorted(tuple(x) for x in set(data)))
 
-def continent_marks(request, config, log):
+def continent_marks(request, config, log, db):
     """Return the subset of landmarks that is to be used for
        first-stage localization.  This is supposed to be a
        short but broadly geographically distributed list.
     """
-    with open(config['CONTINENT_MARKS']) as fp:
-        rd = csv.DictReader(fp)
-        data = [lm_entry_with_location(row) for row in rd]
+    with get_db_cursor(db) as cur:
+        # This query selects the three anchors within each region (as
+        # defined by the "regions" table) that are closest to the
+        # centroid of that region, except that anchors closer than
+        # 100km to the previously selected anchor are excluded.  As
+        # above, if an anchor does not have a CBG calibration, use the
+        # CBG baseline (2/3c, no fixed delay).
+        cur.execute("""
+            SELECT addr, 80 AS port,
+                   ST_Y(location::GEOMETRY) AS lat,
+                   ST_X(location::GEOMETRY) AS lon,
+                   COALESCE(cbg_m, 100000) AS m, COALESCE(cbg_b, 0) AS b
+              FROM (SELECT *, RANK() OVER (PARTITION BY rgn_id
+                                           ORDER BY c_distance)
+              FROM (SELECT *, ST_Distance(location, LAG(location)
+                                OVER (PARTITION BY rgn_id
+                                      ORDER BY c_distance))
+                                AS prev_distance
+              FROM (SELECT l.anchorid, l.addr, l.location, l.cbg_m, l.cbg_b,
+                           r.id as rgn_id,
+                           ST_Distance(l.location, ST_Centroid(r.box))
+                               AS c_distance
+              FROM landmarks l, regions r
+             WHERE l.usable AND l.anchorid IS NOT NULL AND l.region = r.id)
+          _1)
+          _2 WHERE (prev_distance IS NULL OR prev_distance > 100000))
+          _3 WHERE rank <= 3;
+        """)
+        data = [lm_entry_with_location(row) for row in cur]
 
     # Also ask the client to ping its apparent external IP address
     # and 127.0.0.1.  It uses these pingtimes to estimate connection
@@ -122,7 +160,7 @@ def continent_marks(request, config, log):
 
     return flask.jsonify(sorted(tuple(x) for x in set(data)))
 
-def local_marks(request, config, log):
+def local_marks(request, config, log, db):
     """Return the subset of all available landmarks which are within a
        useful striking distance of a particular location, expressed as
        a set of (longitude, latitude, radius) triples; the location is
@@ -146,37 +184,77 @@ def local_marks(request, config, log):
     def check_kilometers(v):
         v = float(v)
         if not (0 < v < 20037.5):
-            raise ValueError("radius out of range")
+            raise ValueError("km out of range")
         return v * 1000
 
     try:
-        lat = request.args.getlist('lat', type=check_latitude)
-        lon = request.args.getlist('lon', type=check_longitude)
-        rad = request.args.getlist('rad', type=check_kilometers)
+        lats = request.args.getlist('lat', type=check_latitude)
+        lons = request.args.getlist('lon', type=check_longitude)
+        rads = request.args.getlist('rad', type=check_kilometers)
+
+        neighbor_dist = check_kilometers(
+            request.args.get('neighbor_dist', '10'))
+
+        n = int(request.args.get('n', '50'))
+        if not (0 < n <= 200):
+            raise ValueError("n out of range")
+
     except KeyError:
         bad_request("missing key")
     except ValueError:
         bad_request("malformed query value")
 
-    if len(lat) != len(lon) or len(lon) != len(rad):
+    if len(lats) != len(lons) or len(lons) != len(rads):
         bad_request("wrong number of values for a query key")
 
-    n = int(request.args.get('n', 100))
-    neighbor_dist = float(request.args.get('neighbor_dist', 100))
+    # Process the disks from smallest to largest.
+    disks = sorted(zip(lons, lats, rads), key = lambda d: d[2])
 
-    shape = geometry.intersect_disks_on_globe(lon, lat, rad)
+    sample = []
+    scale = -1000 * 1000
+    scaledelta = max(1000 * 1000, 4 * neighbor_dist)
+    with get_db_cursor(db) as cur:
+        while len(sample) < n and scale < 10018750:
+            # Construct a SQL query which will retrieve all of the
+            # probes that are within the intersection of all the
+            # requested disks.  Rather than attempting to _compute_
+            # that intersection, we simply ask the database for
+            # "within X meters of point (A,B) AND within Y meters of
+            # point (C,D) AND ..." -- this is probably just as fast
+            # for short lists of disks, and is more likely to do the
+            # Right Thing when some of the circles are very large
+            # and/or cross the poles or the antimeridian.
+            #
+            # Note that unlike the above two queries, this one is not
+            # limited to anchors.  Logic above has ensured that
+            # 'lats', 'lons', and 'rads' contain only floats, so the
+            # SQL string bashing below is injection-safe.
+            query = """
+                SELECT addr, 80 AS port,
+                       ST_Y(location::GEOMETRY) as lat,
+                       ST_X(location::GEOMETRY) as lon,
+                       COALESCE(cbg_m, 100000) AS m, COALESCE(cbg_b, 0) AS b
+                  FROM landmarks
+                 WHERE usable
+            """
+            query += "\n".join(
+            "AND ST_DWithin(location, 'SRID=4326;POINT({} {})'::GEOGRAPHY, {})"
+                .format(lon, lat, rad + scale)
+                for lon, lat, rad in disks)
 
-    with open(config['ALL_LANDMARKS']) as fp:
-        rd = csv.DictReader(fp)
-        lmsample = geometry.sample_tuples_near_shape(
-            shape, (lm_entry_with_location(row) for row in rd),
-            n=n, neighbor_dist=neighbor_dist)
+            cur.execute(query)
 
-    if not lmsample:
+            geometry.sample_more_tuples_into(
+                sample, n, neighbor_dist,
+                (lm_entry_with_location(row) for row in cur))
+
+            scale += scaledelta
+
+    if not sample:
         # Treating this as a bad request simplifies the client.
         bad_request("no landmarks available - empty intersection?")
 
-    return flask.jsonify(sorted(tuple(x) for x in set(lmsample)))
+    return flask.jsonify(sorted(tuple(x) for x in set(sample)))
 
 def probe_results(request, config, log):
     """Record the results of a probe.  Expects a form POST containing one

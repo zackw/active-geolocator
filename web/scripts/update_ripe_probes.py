@@ -246,10 +246,14 @@ def update_landmarks_in_db(current_landmarks):
         cur.execute("""
             ANALYZE landmarks;
         """)
+        # Should really cast back to GEOGRAPHY before calling ST_Centroid,
+        # but postgis 2.3.1 (the version in debian 9) doesn't support that.
+        # The error is less than 500km in all cases so we can live with it
+        # for now.
         cur.execute("""
             UPDATE regions AS r SET lm_centroid = s.centroid
               FROM (SELECT r.id,
-                       ST_Centroid(ST_Union(l.location::GEOMETRY)::GEOGRAPHY)
+                       ST_Centroid(ST_Union(l.location::GEOMETRY))
                          AS centroid
                       FROM regions r, landmarks l
                      WHERE l.usable AND l.region = r.id

@@ -9,9 +9,10 @@
 -- the landmarks table will be converted to GEOMETRY points before
 -- comparison.
 CREATE TABLE regions (
-  id       SERIAL             NOT NULL PRIMARY KEY,
-  name     TEXT               NOT NULL UNIQUE,
-  box      GEOMETRY(POLYGON)  NOT NULL
+  id          SERIAL             NOT NULL PRIMARY KEY,
+  name        TEXT               NOT NULL UNIQUE,
+  box         GEOMETRY(POLYGON)  NOT NULL,
+  lm_centroid GEOGRAPHY(POINT)
 );
 -- These boxes are chosen to roughly enclose all populated terrain and
 -- draw useful dividing lines between groups of anchors, while staying

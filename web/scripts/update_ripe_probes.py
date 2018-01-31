@@ -247,6 +247,16 @@ def update_landmarks_in_db(current_landmarks):
             ANALYZE landmarks;
         """)
         cur.execute("""
+            UPDATE regions AS r SET lm_centroid = s.centroid
+              FROM (SELECT r.id,
+                       ST_Centroid(ST_Union(l.location::GEOMETRY)::GEOGRAPHY)
+                         AS centroid
+                      FROM regions r, landmarks l
+                     WHERE l.usable AND l.region = r.id
+                     GROUP BY r.id) s
+             WHERE s.id = r.id;
+        """)
+        cur.execute("""
             SELECT cl, count(*) FROM (
                 SELECT CASE WHEN NOT usable THEN 'unusable'
                             WHEN anchorid IS NOT NULL THEN 'anchor'

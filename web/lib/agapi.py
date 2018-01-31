@@ -125,10 +125,13 @@ def continent_marks(request, config, log, db):
     with get_db_cursor(db) as cur:
         # This query selects the three anchors within each region (as
         # defined by the "regions" table) that are closest to the
-        # centroid of that region, except that anchors closer than
-        # 100km to the previously selected anchor are excluded.  As
-        # above, if an anchor does not have a CBG calibration, use the
-        # CBG baseline (2/3c, no fixed delay).
+        # centroid of the point-set of all the usable probes (not just
+        # anchors) within that region.  (The location of that centroid
+        # was previously determined and written to the database by the
+        # update script.)  Anchors closer than 100km to the previously
+        # selected anchor are excluded.  As above, if an anchor does
+        # not have a CBG calibration, use the CBG baseline (2/3c, no
+        # fixed delay).
         cur.execute("""
             SELECT addr, 80 AS port,
                    ST_Y(location::GEOMETRY) AS lat,
@@ -142,7 +145,7 @@ def continent_marks(request, config, log, db):
                                 AS prev_distance
               FROM (SELECT l.anchorid, l.addr, l.location, l.cbg_m, l.cbg_b,
                            r.id as rgn_id,
-                           ST_Distance(l.location, ST_Centroid(r.box))
+                           ST_Distance(l.location, r.lm_centroid)
                                AS c_distance
               FROM landmarks l, regions r
              WHERE l.usable AND l.anchorid IS NOT NULL AND l.region = r.id)

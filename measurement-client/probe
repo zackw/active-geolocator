@@ -279,7 +279,7 @@ class ConnBuffer:
 
         return results
 
-def report_results(cfg, results, coarse_circles):
+def report_results(cfg, results, landmarks, coarse_circles):
     data = dict(vars(cfg))
     # We don't need to report all of the configuration parameters.
     del data["lm_coarse_url"]
@@ -307,6 +307,7 @@ def report_results(cfg, results, coarse_circles):
         del data["proxy_location_unknown"]
 
     data["results"] = results
+    data["landmarks"] = landmarks
     data["circles"] = coarse_circles
     now = datetime.datetime.utcnow()
     data["timestamp"] = now.isoformat()
@@ -480,7 +481,7 @@ def compute_coarse_circles(cfg, landmarks, results):
     # The factor of 2 converts round-trip time to one-way distance.
     # The factor of 1000 converts km/ms to m/ms.
     cbg_default_m = cfg.cbg_default_speed * 1000 / 2
-    cbg_default_b = -cfg.cbg_default_delay * cbg_m
+    cbg_default_b = -cfg.cbg_default_delay * cbg_default_m
 
     circles = []
     for lm in landmarks:
@@ -727,7 +728,8 @@ def main():
     # independently of the list of observations).
     setattr(cfg, "n_landmarks", len(coarse_landmarks) + len(fine_landmarks))
 
+    fine_landmarks.extend(coarse_landmarks)
     fine_results.extend(coarse_results)
-    report_results(cfg, fine_results, coarse_circles)
+    report_results(cfg, fine_results, fine_landmarks, coarse_circles)
 
 main()

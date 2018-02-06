@@ -259,7 +259,7 @@ def local_marks(request, config, log, db):
 
     return flask.jsonify(sorted(tuple(x) for x in set(sample)))
 
-def probe_results(request, config, log):
+def probe_results(request, config, log, lmdb):
     """Record the results of a probe.  Expects a form POST containing one
        key, "blob", which is a JSON object; we validate this object and
        then save it to disk.

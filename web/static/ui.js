@@ -1024,6 +1024,19 @@
         return null;
     }
 
+    function get_landmarks_for_report()
+    {
+        var landmarks = [], addr, lm;
+        for (addr in landmark_data) {
+            if (!landmark_data.hasOwnProperty(addr)) continue;
+            lm = landmark_data[addr];
+            landmarks.push([
+                addr, lm.port, lm.lat, lm.lon, lm.cbg_m, lm.cbg_b
+            ]);
+        }
+        return landmarks;
+    }
+
     function get_report_metadata()
     {
         var md = {
@@ -1035,9 +1048,11 @@
             overhead:  probe_overhead,
             latitude:  +d.getElementById("client-lat").value,
             longitude: +d.getElementById("client-lon").value,
-            browser:   browser_short_version
+            browser:   browser_short_version,
+            landmarks: get_landmarks_for_report()
         };
         var proxy_mode = radio_value("proxy-loc");
+
         if (proxy_mode === "unknown")
             md.proxy_location_unknown = true;
         else if (proxy_mode === "coords") {
@@ -1054,7 +1069,6 @@
         }
         if (radio_value("publication") === "no")
             md.no_publication = true;
-
         return md;
     }
 

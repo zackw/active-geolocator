@@ -1,0 +1,556 @@
+#! /usr/bin/python3
+
+# usage: locate-from-db output-dir basemap database \
+#                       [batch selector...]
+#
+# note: this program only works with "new" batches that have the
+# relevant CBG calibration embedded in the annotations, and the
+# basemap should be a vector-format world map (in any format
+# acceptable to fiona).
+
+import argparse
+import collections
+import contextlib
+import csv
+import datetime
+import gzip
+import itertools
+import multiprocessing
+import os
+import pickle
+import sys
+import time
+import zlib
+from math import inf as Inf
+
+import psycopg2
+import psycopg2.extras
+
+import fiona
+import pyproj
+from shapely.geometry import \
+    Point, MultiPoint, Polygon, box as Box, shape as Shape
+from shapely.geometry import mapping as sh_mapping
+from shapely.ops import transform as sh_transform
+from functools import partial
+
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "lib")))
+import ageo
+
+_time_0 = time.monotonic()
+
+def progress(message, *args):
+    global _time_0
+    sys.stderr.write(
+        ("{}: " + message + "\n").format(
+            datetime.timedelta(seconds = time.monotonic() - _time_0),
+            *args))
+
+def warning(message, *args):
+    sys.stderr.write(
+        ("\t*** " + message + "\n").format(*args))
+
+def load_calibration(cfname):
+    try:
+        with gzip.open(cfname, "rb") as fp:
+            return pickle.load(fp)
+
+    except (OSError, zlib.error, pickle.UnpicklingError) as e:
+        sys.stderr.write("unable to load calibration: {}: {}\n"
+                         .format(cfname, e))
+        sys.exit(1)
+
+def get_batch_list(db, selector):
+    cur = db.cursor()
+    query = ("SELECT b.id, COUNT(*) FROM batches b, measurements m "
+             "WHERE b.id = m.batch AND m.rtt > 0")
+    if selector:
+        query += "AND (" + selector + ") "
+    query += "GROUP BY b.id;"
+    cur.execute(query)
+    batches = []
+    for row in cur:
+        if row[1] > 0:
+            batches.append(row[0])
+
+    progress("{} non-empty batches selected.", len(batches))
+    return batches
+
+Position = collections.namedtuple("Position", ("ipv4", "label", "ilabel", "lon", "lat"))
+def get_landmark_positions(db, batches):
+    cur = db.cursor()
+    cur.execute("SELECT DISTINCT h.ipv4, h.label, h.longitude, h.latitude"
+                "  FROM hosts h, measurements m"
+                " WHERE m.dst = h.ipv4"
+                "   AND m.batch = ANY(%s)",
+                (batches,))
+    rv = {}
+    for row in cur:
+        try:
+            ilabel = int(row[1].partition("-")[2])
+        except:
+            ilabel = -1
+        pos = Position(row[0], row[1], ilabel, row[2], row[3])
+        rv[row[0]] = pos
+
+    return rv
+
+def router_for_addr(addr):
+    return addr[:addr.rfind(".")] + ".1"
+
+def retrieve_batch(db, batchid):
+    cur = db.cursor(cursor_factory=psycopg2.extras.DictCursor)
+    cur.execute("""
+        SELECT b.id, b.client_lat, b.client_lon, b.client_addr,
+               c.label, c.country, c.asn,
+               b.proxied, b.proxy_lat, b.proxy_lon, b.proxy_addr,
+               p.label, p.country, p.asn,
+               b.annot->>'proxy_label' as proxy_label,
+               b.annot->>'proxy_provider' as proxy_provider,
+               b.annot->>'proxy_alleged_cc2' as proxy_alleged_cc2
+          FROM batches b
+     LEFT JOIN hosts c ON b.client_addr = c.ipv4
+     LEFT JOIN hosts p ON b.proxy_addr  = p.ipv4
+         WHERE b.id = %s""", (batchid,))
+
+    # Copy the metadata into a normal dictionary to avoid problems later
+    # when it gets stuffed into a Location annotation.
+    metadata_raw = cur.fetchone()
+    metadata = {}
+    metadata.update(metadata_raw)
+
+    # We don't need a fancy cursor for the next steps.
+    cur = db.cursor()
+
+    # There's only ever one source for any given batch (and it is
+    # always equal to either client_addr or proxy_addr for that
+    # batch).  Throw out all measurements that didn't come back with
+    # either errno 0 or 111 (that is, success and ECONNREFUSED).  Also
+    # throw out RTT zero, which tends to make the calibration choke.
+    # And finally throw out the client and proxy address and
+    # 127.0.0.1, which will have anomalously short RTTs (since they
+    # never hit the network).
+    cur.execute("""
+        SELECT dst, rtt FROM measurements
+         WHERE batch = %s AND rtt > 0
+           AND status IN (0, 111)
+           AND dst NOT IN ('127.0.0.1', %s, %s)
+         """, (batchid, metadata["client_addr"], metadata["proxy_addr"]))
+    measurements = collections.defaultdict(list)
+    for dst, rtt in cur:
+        if 0 <= rtt < 5000:
+            measurements[dst].append(rtt)
+        else:
+            warning("out of range: {} -> {}: {}", batchid, dst, rtt)
+
+    if metadata["proxied"]:
+        # We need to determine and subtract off the travel time _to_
+        # the proxy.
+        # There are three ways to do this, in decreasing order of
+        # accuracy.  Ideally, we have a measurement of the RTT to the
+        # proxy's own router.
+        router = router_for_addr(metadata["proxy_addr"])
+        if router in measurements:
+            adjustment = min(measurements[router]) - 5
+            metadata["proxy_rtt_estimation_method"] = "router"
+            metadata["proxy_rtt_estimation_addr"] = router
+        else:
+            # The client itself may also have been a ping destination.
+            # We can't look it up by address, but we can look in the
+            # hosts table for the location.
+            cur.execute("""
+                select ipv4 from hosts
+                 where abs(latitude - %s) < 0.01
+                   and abs(longitude - %s) < 0.01
+            """, (metadata["client_lat"], metadata["client_lon"]))
+
+            cdest = None
+            adjustment = Inf
+            for row in cur:
+                addr = row[0]
+                if addr in measurements:
+                    cadj = min(measurements[addr])
+                    if cadj < adjustment:
+                        cdest = addr
+                        adjustment = cadj
+
+            if cdest is not None:
+                # If we have a ping destination that is colocated with
+                # the client, then we can estimate the RTT to the proxy
+                # as half of the RTT through the proxy and back to the
+                # client's location, minus a small fudge factor.
+                adjustment = adjustment/2 - 5
+                metadata["proxy_rtt_estimation_method"] = "there_and_back"
+                metadata["proxy_rtt_estimation_addr"] = cdest
+
+        # In no case allow the adjustment to be greater than the
+        # smallest available measurement minus five milliseconds, nor
+        # allow it to be negative.
+        cdest = None
+        clamp = Inf
+        for addr, meas in measurements.items():
+            mmeas = min(meas)
+            if mmeas < clamp:
+                clamp = mmeas
+                cdest = addr
+        if clamp - 5 < adjustment:
+            metadata["proxy_rtt_estimation_clamp"] = clamp
+            metadata["proxy_rtt_estimation_clamp_addr"] = cdest
+            if "proxy_rtt_estimation_method" in metadata:
+                metadata["proxy_rtt_estimation_method"] += "_clamped"
+                metadata["proxy_rtt_estimation_unclamped"] = adjustment
+            else:
+                metadata["proxy_rtt_estimation_method"] = "clamp"
+
+            adjustment = clamp - 5
+        adjustment = max(adjustment, 0)
+        metadata["estimated_proxy_rtt"] = adjustment
+
+        # This loop mutates measurements, so pull the keys up front.
+        for addr in list(measurements.keys()):
+            measurements[addr] = sorted(
+                max(0.1, m - adjustment)
+                for m in measurements[addr]
+            )
+
+        progress("{}: adjust by {} (method {})",
+                 metadata["id"], adjustment,
+                 metadata["proxy_rtt_estimation_method"])
+
+    # convert to a normal dict for returning
+    return metadata, { k:v for k,v in measurements.items() }
+
+# these are filled in in main()
+positions    = None
+basemap      = None
+
+WGS84_globe = pyproj.Proj(proj="latlong", ellps="WGS84")
+
+# This rectangle encloses all of the land on the planet except for
+# Antarctica and a few islands very close to the antimeridian.
+# Cutting off the poles and the antimeridian this way minimizes the
+# odds of problems due to coordinate singularities.
+MapBounds = Box(-179.9, -60, 179.9, 85)
+
+def DiskOnGlobe(x, y, radius):
+
+    # If the radius is too close to half the circumference of the
+    # Earth, the projection operation below will produce an invalid
+    # polygon.  We don't get much use out of a bounding region that
+    # includes the whole planet but for a tiny disk (which will
+    # probably be somewhere in the ocean anyway) so just give up and
+    # say that the bound is the entire planet.
+    if radius > 19975000 :
+        return MapBounds
+
+    # For similar reasons, don't try to draw circles smaller than 10km
+    # in diameter.
+    radius = max(radius, 5000)
+
+    # To find all points on the Earth within a certain distance of
+    # a reference latitude and longitude, back-project onto the
+    # Earth from an azimuthal-equidistant map with its zero point
+    # at the reference latitude and longitude.
+    aeqd = pyproj.Proj(proj="aeqd", ellps="WGS84", datum="WGS84",
+                       lat_0=y, lon_0=x)
+
+    disk = sh_transform(
+        functools.partial(pyproj.transform, aeqd, WGS84_globe),
+        Point(0, 0).buffer(radius))
+
+    # Two special cases must be manually dealt with.  First, if
+    # any side of the "disk" (really a many-sided polygon)
+    # crosses the coordinate singularity at longitude ±180, we
+    # must replace it with a diversion to either the north or
+    # south pole (whichever is closer) to ensure that it still
+    # encloses all of the area it should.
+    boundary = np.array(disk.boundary)
+    i = 0
+    while i < boundary.shape[0] - 1:
+        if abs(boundary[i+1,0] - boundary[i,0]) > 180:
+            pole = -90 if boundary[i,1] < 0 else 90
+            west = -180 if boundary[i,0] < 0 else 180
+            east = 180 if boundary[i,0] < 0 else -180
+
+            boundary = np.insert(boundary, i+1, [
+                [west, boundary[i,1]],
+                [west, pole],
+                [east, pole],
+                [east, boundary[i+1,1]]
+            ], axis=0)
+            i += 5
+        else:
+            i += 1
+    # If there were two edges that crossed the singularity and they
+    # were both on the same side of the equator, the excursions will
+    # coincide and shapely will be unhappy.  buffer(0) corrects this.
+    disk = Polygon(boundary).buffer(0)
+
+    # Second, if the disk is very large, the projected disk might
+    # enclose the complement of the region that it ought to enclose.
+    # If it doesn't contain the reference point, we must subtract it
+    # from the entire map.  Conversely, if it _does_ contain the
+    # reference point, trim it to the map boundaries.
+    origin = Point(self.ref_lon, self.ref_lat)
+    if disk.contains(origin):
+        disk = MapBounds.intersection(disk)
+    else:
+        disk = MapBounds.difference(disk)
+
+    assert disk.is_valid
+    assert disk.contains(origin)
+    return disk
+
+def max_subset_with_nonempty_intersection(disks, base_region):
+    """Find the largest subset of DISKS whose intersection is nonempty;
+       also include BASE_REGION in the intersection, always.  If there
+       are two or more subsets with the same cardinality whose intersection
+       is nonempty, choose the one whose intersection has the smallest area.
+    """
+
+    # Suppose there are five disks, ABCDE: the set of all subsets can
+    # be organized into a suffix tree
+    #
+    # ε.5 - A.5 - AB.5 - ABC.5 - ABCD.5 - ABCDE.5
+    #                          - ABCE.4
+    #                  - ABD.4 - ABDE.4
+    #                  - ABE.3
+    #           - AC.4 - ACD.4 - ACDE.4
+    #                  - ACE.3
+    #           - AD.3 - ADE.3
+    #           - AE.2
+    #     - B.4 - BC.4 - BCD.4 - BCDE.4
+    #                  - BCE.3
+    #           - BD.3 - BDE.3
+    #           - BE.3
+    #     - C.3 - CD.3 - CDE.3
+    #           - CE.2
+    #     - D.2 - DE.2
+    #     - E.1
+    #
+    # where the number attached to each node is the maximum size of a
+    # subset below that node.
+    #
+    # Suppose the set ABC has an empty intersection, then all of the
+    # suffixes of that set will also be empty, and we can cut off that
+    # subtree.  Suppose that we move on to considering ABD and find it
+    # to be nonempty; then we need not waste time considering any more
+    # branches that only lead to sets of size 1 or 2.
+    #
+    # This tree has, in the limit, 2^N nodes, so we don't want to
+    # actually build it in memory, nor do we want to iterate over junk
+    # nodes even just to skip them.  Instead we rely on the
+    # lexicographic ordering of the labels (A,B,C,D,E): if we are
+    # visiting node ABC, then its immediate children are ABC + D and
+    # ABC + E.
+    if base_region.is_empty:
+        raise ValueError("base_region must not be empty")
+
+    n_disks = len(disks)
+    if n_disks == 0:
+        return base_region
+
+    best_subset = ()
+    best_region = base_region
+    best_area = base_region.area
+    disks = sorted(disks, key = lambda d: d.area)
+
+    # Notionally, we begin by discovering that the base_region
+    # intersected with nothing is the base_region, which is already
+    # known not to be empty.  Stack the subtrees in reverse order
+    # so that the deeper trees will be processed first.
+    stack = [((i,), base_region) for i in reversed(range(n_disks))]
+
+    # For profiling, count number of subsets considered.
+    subsets_considered = 0
+    empty_subsets = 0
+
+    while stack:
+        cand, parent_region = stack.pop()
+
+        # The largest candidate set that is a superset of "cand" is
+        # "cand" plus all of the disks that have not yet been
+        # considered for inclusion in "cand", which is all of the
+        # disks numbered greater than the largest index in "cand"
+        # (which is always the last index in "cand").  If that set is
+        # _smaller_ than best_subset, this subtree of candidates
+        # cannot possibly beat it; we don"t even need to build the
+        # intersections.
+        if len(cand) + (n - cand[-1]) < len(best_subset):
+            continue
+
+        # The parent_region is already the intersection of the
+        # base_region with the disks labeled cand[0] through cand[-2].
+        # It remains to intersect it with cand[-1].
+        subsets_considered += 1
+        cand_region = parent_region.intersection(disks(cand[-1]))
+        if cand_region.is_empty:
+            empty_subsets += 1
+            continue
+
+        if len(cand) > len(best_subset) or (len(cand) == len(best_subset)
+                                            and cand_region.area < best_area):
+            best_subset = cand
+            best_region = cand_region
+            best_area = cand_region.area
+
+        # Queue all of the children of this node.
+        stack.extend((cand + (i,), cand_region)
+                     for i in range(max(cand)+1, n_disks))
+
+    progress("max_subset: {} disks {} subsets {} empty subsets {} best"
+             .format(n_disks, subsets_considered, empty_subsets,
+                     len(best_subset)))
+    return best_region
+
+
+def find_plausible_intersection(empirical_disks, physical_limit_disks):
+
+    phy_region = max_subset_with_nonempty_intersection(
+        physical_limit_disks, MapBounds)
+
+    # Any empirical disk that doesn't overlap the intersection of
+    # all the physical disks cannot contribute to the solution.
+    # Any empirical disk that is the same size as the corresponding
+    # physical disk does not need to be tested.
+    candidate_emp_disks = [
+        e for e, p in zip(empirical_disks, physical_limit_disks)
+        # 2 decimal places of resolution on a disk in latlong coordinates
+        # corresponds to an error of ~1km at the equator.
+        if e.intersects(phy_region) and not e.almost_equals(p, 2)
+    ]
+
+    return max_subset_with_nonempty_intersection(
+        candidate_emp_disks, phy_region)
+
+
+def radius_for_cal(cal, minrtt):
+    pass
+
+def radius_limit(minrtt):
+    
+
+def process_batch(args):
+    global positions, basemap
+    odir, cals, metadata, measurements = args
+    tag, cals = mode
+
+    minrtts = {}
+    calib = {}
+    for landmark, rtts in measurements.items():
+        if landmark not in positions:
+            continue
+        lpos = positions[landmark]
+        if landmark in cals:
+            calib[landmark] = cals[landmark]
+        elif lpos.label in cals:
+            calib[landmark] = cals[lpos.label]
+        elif lpos.ilabel in cals:
+            calib[landmark] = cals[lpos.ilabel]
+        else:
+            continue
+
+        minrtts[landmark] = min(rtts)
+
+    if not minrtts:
+        return metadata["id"], "no observations"
+
+    minrtts = sorted((rtt, landmark) for landmark, rtt in minrtts)
+
+    empirical_disks = []
+    physical_limit_disks = []
+    for minrtt, landmark in minrtts:
+        lpos = positions[landmark]
+        cal = calib[landmark]
+        empirical_disks.append(
+            DiskOnGlobe(lpos.lon, lpos.lat, radius_for_cal(cal, minrtt)))
+        physical_limit_disks.append(
+            DiskOnGlobe(lpos.lon, lpos.lat, radius_limit(minrtt)))
+
+    region, pattern = find_plausible_intersection(empirical_disks, physical_limit_disks)
+    if region is None:
+        return metadata["id"], "empty intersection"
+
+    land_region = region.intersection(basemap)
+    if land_region.is_empty:
+        metadata["on_land"] = False
+        tag = "at sea"
+    else:
+        metadata["on_land"] = True
+        region = land_region
+        tag = "ok"
+
+    with open(os.path.join(odir, tag + "-" + str(metadata["id"]) + ".json"),
+              "wt") as fp:
+        json.dump({ "meta": metadata,
+                    "poly": sh_mapping(region) }, fp)
+
+    return metadata["id"], "{} ({}: {})".format(tag, sum(pattern), "".join(pattern))
+
+
+def marshal_batches(args, db, batches):
+    for batchid in batches:
+        calib, metadata, measurements = retrieve_batch(db, batchid)
+        yield (args.output_dir, metadata, calib, measurements)
+
+def inner_main(args, pool, db, batches):
+    for id, tag in pool.imap_unordered(
+            process_batch,
+            marshal_batches(args, db, batches)):
+        progress("{}: {}", id, tag)
+
+def load_basemap(basemap_f):
+    def country_code(props):
+        cc = props.get("iso_a2")
+        if not cc or cc == "-99":
+            cc = "X" + "".join(c for c in props["name_long"]
+                               if 'A' <= c <= 'Z')[:2]
+        return cc.lower()
+
+    def clean_shape(shp):
+        geom = Shape(shp)
+        if not geom.is_valid:
+            geom = geom.buffer(0)
+            assert geom.is_valid
+        return geom
+
+    Country = collections.namedtuple("Country",
+                                     ("name", "cc", "region"))
+
+    with fiona.open(basemap_f) as fp:
+        return [Country(rec["properties"]["name_long"],
+                        country_code(rec["properties"]),
+                        clean_shape(rec["geometry"]))
+                for rec in fp]
+
+def main():
+    global positions, calibrations, basemap
+
+    ap = argparse.ArgumentParser()
+    ap.add_argument("output_dir")
+    ap.add_argument("basemap")
+    ap.add_argument("database")
+    ap.add_argument("batch_selector", nargs=argparse.REMAINDER)
+    args = ap.parse_args()
+
+    args.batch_selector = " ".join(args.batch_selector)
+
+    # The worker pool must be created before the database connection,
+    # so that the database handle is not duplicated into the worker
+    # processes.  However, we also need the database connection before
+    # the worker processes exist, to load up "positions", which is
+    # propagated into the worker processes by fork().  So we have to
+    # drop the database connection and pick it back up again.
+    progress("preparing...")
+    os.makedirs(args.output_dir, exist_ok=True)
+
+    basemap = load_basemap(args.basemap)
+    with contextlib.closing(psycopg2.connect(dbname=args.database)) as db:
+        batches = get_batch_list(db, args.batch_selector)
+        positions = get_landmark_positions(db, batches)
+
+    with multiprocessing.Pool() as pool:
+        with contextlib.closing(psycopg2.connect(dbname=args.database)) as db:
+            inner_main(args, pool, db, batches)
+
+main()

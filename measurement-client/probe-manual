@@ -1,0 +1,535 @@
+#! /usr/bin/env python
+
+"""Perform the same kind of measurement that 'probe' does, but under
+manual, local control: the list of computers to send connection
+requests to is taken from a file on disk, and the results are saved to
+disk.  Also, only performs a single phase measurement---all of the
+computers in the list will be probed---and does not attempt to
+estimate local overhead.
+
+"""
+
+from __future__ import division
+
+import argparse
+import collections
+import contextlib
+import csv
+import ctypes
+import datetime
+import errno
+import itertools
+import json
+import mmap
+import os
+import random
+import resource
+import socket
+import struct
+import subprocess
+import sys
+import time
+
+if not hasattr(resource, "RLIMIT_NOFILE"):
+    if hasattr(resource, "RLIMIT_OFILE"):
+        setattr(resource, "RLIMIT_NOFILE", getattr(resource, "RLIMIT_OFILE"))
+    else:
+        raise EnvironmentError(
+            "don't know how to access the limit on the number of open files")
+
+try:
+    import configparser
+except ImportError:
+    import ConfigParser as configparser
+
+# Communication with probe-core uses a shared memory segment, passed down
+# as the "stdin".  Unfortunately, the stdlib doesn't expose shm_open.
+def find_shm_open():
+    # shm_open and shm_unlink might be in one of several different libraries.
+    libs_to_search = [
+        "libc.so.6", "libc.so.1", "librt.so.1", "libSystem.B.dylib",
+    ]
+    for lib in libs_to_search:
+        try:
+            h = ctypes.CDLL(lib, use_errno=True)
+            shm_open = h.shm_open
+            shm_unlink = h.shm_unlink
+
+            # The last argument to shm_open is mode_t, but ctypes doesn't
+            # expose mode_t.  The integer promotions will hopefully
+            # prevent problems.
+            shm_open.argtypes = (ctypes.c_char_p, ctypes.c_int, ctypes.c_int)
+            shm_unlink.argtypes = (ctypes.c_char_p,)
+            return (shm_open, shm_unlink)
+
+        except:
+            continue
+
+    return (None, None)
+
+shm_open, shm_unlink = find_shm_open()
+if shm_open is not None:
+    try:
+        from tempfile import _RandomNameSequence
+    except:
+        def _RandomNameSequence():
+            """_RandomNameSequence generates an endless sequence of
+               unpredictable strings which can safely be incorporated
+               into file names.  Each string is six characters long.
+            """
+            characters = ("abcdefghijklmnopqrstuvwxyz"
+                          "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+                          "0123456789_")
+            rng = random.Random()
+            normcase = os.path.normcase
+            while 1:
+                letters = []
+                yield normcase("".join(
+                    rng.choice(characters) for _ in "123456"
+                ))
+
+    class MemorySegment:
+        def __init__(self):
+            self._fd = -1
+
+            retries = 0
+            flags = os.O_RDWR|os.O_CREAT|os.O_EXCL
+            mode = 384 # 0600
+            for nm in _RandomNameSequence():
+                xnm = "/"+nm
+                exnm = xnm.encode("utf-8")
+                fd = shm_open(exnm, flags, mode)
+                if fd >= 0:
+                    break
+                err = ctypes.get_errno()
+                if err != errno.EEXIST or retries > 1000:
+                    raise OSError(err, "shm_open: " + os.strerror(err), xnm)
+                retries += 1
+
+            self._fd = fd
+
+            rv = shm_unlink(exnm)
+            if rv:
+                err = ctypes.get_errno()
+                os.close(self._fd)
+                self._fd = -1
+                raise OSError(err, "shm_unlink: " + os.strerror(err), xnm)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *ignored):
+            self.close()
+            return False
+
+        def __del__(self):
+            self.close()
+
+        def close(self):
+            if self._fd != -1:
+                fd = self._fd
+                self._fd = -1
+                os.close(fd)
+
+        def fileno(self):
+            return self._fd
+
+else:
+    # if we don't have shm_open, a temporary file will do
+    from tempfile import TemporaryFile as MemorySegment
+
+AddrTuple = collections.namedtuple("AddrTuple", ("host", "port"))
+
+class ConnBuffer:
+    def __init__(self, addrs, spacing, timeout):
+        self.addrs   = addrs
+        self.n_conn  = len(addrs)
+        self.n_proc  = 0
+        self.spacing = spacing
+        self.timeout = timeout
+        self.hform   = struct.Struct("=IIIIII")
+        self.cform   = struct.Struct("=I4sHHI")
+        self.seg_obj = None
+        self.seg_fd  = None
+        self.seg_map = None
+        self.seg_len = self.hform.size + self.cform.size * self.n_conn
+
+    def __enter__(self):
+        self.seg_obj = MemorySegment()
+        self.seg_fd  = self.seg_obj.fileno()
+        os.ftruncate(self.seg_fd, self.seg_len)
+        self.seg_map = mmap.mmap(self.seg_fd, self.seg_len)
+        self.encode_addrs()
+        return self
+
+    def __del__(self):
+        self.close()
+
+    def __exit__(self, *ignored):
+        self.close()
+        return False
+
+    def close(self):
+        if self.seg_map is not None:
+            self.seg_map.close()
+            self.seg_map = None
+        if self.seg_obj is not None:
+            self.seg_obj.close()
+            self.seg_obj = None
+            self.seg_fd = -1
+
+    def check_completion(self):
+        _,_,n_proc,_,_,_ = self.hform.unpack(self.seg_map[0:self.hform.size])
+        self.n_proc = n_proc
+        return self.n_proc == self.n_conn
+
+    def encode_addrs(self):
+        # Assign a serial number to each IP address.  This is only
+        # used internally by probe-core, but it's much easier to
+        # generate them in Python.
+        serial = {}
+        sno = 0
+        for addr in self.addrs:
+            if addr.host not in serial:
+                serial[addr.host] = sno
+                sno += 1
+
+        self.hform.pack_into(self.seg_map, 0,
+                             len(serial), self.n_conn, 0,
+                             max(int(self.spacing * 1e6), 1000000),
+                             max(int(self.timeout * 1e6), 1000000),
+                             0)
+
+        offset = self.hform.size
+        for addr in self.addrs:
+            ip = socket.inet_aton(addr.host)
+            port = socket.htons(addr.port)
+            self.cform.pack_into(self.seg_map, offset,
+                                 serial[addr.host], ip, port, 0, 0)
+            offset += self.cform.size
+
+    def decode_results(self):
+        offset = self.hform.size
+        results = []
+        while offset < self.seg_len:
+            _, addr, port, err, elapsed = \
+                self.cform.unpack_from(self.seg_map, offset)
+            host = socket.inet_ntoa(addr)
+            port = socket.ntohs(port)
+            results.append((
+                host, port,
+                errno.errorcode.get(err, err),
+                elapsed * 1e-6
+            ))
+            offset += self.cform.size
+
+        return results
+
+def record_results(cfg, results, landmarks):
+    data = dict(vars(cfg))
+    # We don't need to report all of the configuration parameters.
+    del data["config"]
+    del data["core"]
+    if data["location_unknown"]:
+        del data["latitude"]
+        del data["longitude"]
+    else:
+        del data["location_unknown"]
+
+    if data["proxied_connection"]:
+        if data["proxy_location_unknown"]:
+            del data["proxy_latitude"]
+            del data["proxy_longitude"]
+        else:
+            del data["proxy_location_unknown"]
+    else:
+        del data["proxy_latitude"]
+        del data["proxy_longitude"]
+        del data["proxy_location_unknown"]
+
+    data["results"] = results
+    data["landmarks"] = landmarks
+    now = datetime.datetime.utcnow()
+    data["timestamp"] = now.isoformat()
+    blob = json.dumps(data, separators=(',', ':')).encode('utf-8')
+
+    # Save the data to a file in the current directory.
+    tmpl = now.strftime("probe-result-%Y-%m-%d-{:04d}.json")
+    for i in range(10000):
+        fname = tmpl.format(i)
+        try:
+            # O_EXCL is not accessible via plain open() in py2.
+            fd = os.open(fname, os.O_WRONLY|os.O_CREAT|os.O_EXCL)
+            with os.fdopen(fd, "wb") as f:
+                f.write(blob)
+                f.write(b"\n")
+            sys.stderr.write("Results logged to {}.\n".format(fname))
+            return 0
+
+        except OSError as e:
+            if e.errno == errno.EEXIST:
+                continue
+            sys.stderr.write(
+                "Unable to record data ({}: {}); giving up.\n"
+                .format(e.filename, e.strerror))
+            return 1
+
+    sys.stderr.write(
+        "Unable to record data locally (too many local records already); "
+        "giving up.\n")
+    return 1
+
+def perform_probes(cfg, landmarks):
+    """Make a connection to each of the LANDMARKS, in order, and measure
+       the time for connect(2) to either succeed or fail -- we don't
+       care which.
+    """
+    addresses = choose_probe_order(cfg, landmarks)
+
+    with ConnBuffer(addresses, cfg.spacing, cfg.timeout) as cb:
+
+        cmd = [cfg.core]
+        if cfg.socks5:
+            cmd.append(cfg.socks5[0])
+            cmd.append(str(cfg.socks5[1]))
+
+        resource.setrlimit(resource.RLIMIT_NOFILE,
+                           (max(16, min(len(landmarks), cfg.parallel) + 3),
+                            cfg.max_parallel))
+        cycles = 0
+        while cycles < 5:
+            if cycles == 0:
+                sys.stderr.write("Performing {} RTT measurements...\n"
+                                 .format(cb.n_conn))
+            else:
+                sys.stderr.write("{} measurements still to do, retrying...\n"
+                                 .format(cb.n_conn - cb.n_proc))
+
+            rc = subprocess.call(cmd, stdin=cb.seg_fd)
+            if rc > 0:
+                sys.stderr.write("'{}': unsuccessful exit, code {}\n"
+                                 .format(" ".join(cmd), rc))
+
+            elif rc < 0:
+                sys.stderr.write("'{}': killed by signal {}\n"
+                                 .format(" ".join(cmd), -rc))
+
+            cycles += 1
+            if cb.check_completion(): break
+
+        else:
+            sys.stderr.write(
+                "Giving up after {} cycles with only {} of {} complete.\n"
+                .format(cycles, cb.n_proc, cb.n_conn))
+
+        return cb.decode_results()
+
+def choose_probe_order(cfg, addresses):
+    """Choose a randomized probe order for the ADDRESSES.  This both
+       expands the list to include CFG.n_probes copies of each address,
+       and shuffles it.
+    """
+
+    # We probe each host all at once, but we do them in a random order.
+    addrs = addresses[:]
+    random.shuffle(addrs)
+    rv = []
+    for addr in addrs:
+        for _ in range(cfg.n_probes):
+            rv.append(addr)
+
+    return rv
+
+def load_landmark_list(fname):
+    def resolve_dns(host, port):
+        r_host, r_port = socket.getaddrinfo(
+            host, port, socket.AF_INET, socket.SOCK_STREAM, 0, 0)[0][4]
+        return AddrTuple(r_host, r_port)
+
+    addresses = set()
+    with open(fname, "r") as fp:
+        rd = csv.reader(fp)
+        for row in rd:
+            if len(row) == 0:
+                continue
+            elif len(row) == 1:
+                if not row[0] or row[0][0] == '#' or row[0] == "host":
+                    continue
+                addresses.add(resolve_dns(row[0], 80))
+            else:
+                if not row[0] or row[0][0] == '#' or row[0] == "host":
+                    continue
+                if not row[1] or row[1] == "port":
+                    continue
+                addresses.add(resolve_dns(row[0], row[1]))
+
+    return sorted(addresses)
+
+def parse_local_config_file(args):
+    """Read the local config file, which tells us where to contact the
+       server and specifies probe parameters.  For convenience,
+       everything we get out of the config file is merged into the
+       same attribute bag as the command line arguments.
+    """
+    try:
+        with open(args.config) as f:
+            p = configparser.RawConfigParser()
+            p.readfp(f)
+
+            getstr = lambda p, k: p.get("probe", k)
+            getint = lambda p, k: p.getint("probe", k)
+            getfloat = lambda p, k: p.getfloat("probe", k)
+
+            config_keys = [
+                ("spacing", getfloat),
+                ("parallel", getint),
+                ("timeout", getfloat),
+                ("n_probes", getint),
+                ("n_fine_landmarks", getint),
+                ("cbg_dist_limit", getfloat),
+                ("cbg_time_limit", getfloat),
+                ("cbg_default_speed", getfloat),
+                ("cbg_default_delay", getfloat),
+                ("overhead_limit", getfloat),
+                ("proxy_overhead_limit", getfloat),
+            ]
+            for k, getter in config_keys:
+                setattr(args, k, getter(p, k))
+
+
+            # Fewer than one connection at a time obviously doesn't
+            # work.  The upper limit is the kernel-imposed limit on
+            # open files per process, minus 3.
+            max_parallel = resource.getrlimit(resource.RLIMIT_NOFILE)[1]
+            setattr(args, "max_parallel", max_parallel)
+            if args.parallel == 0 or args.parallel > max_parallel:
+                args.parallel = max_parallel
+            elif args.parallel < 0:
+                raise ValueError("'parallel' must be nonnegative")
+
+            # poll(2) takes its timeout in milliseconds, so a timeout
+            # smaller than one millisecond is impossible (probe-core
+            # *could* be using ppoll, but we don't know that).  We
+            # impose an artificial upper limit here of one minute.
+            if args.timeout < 1 or args.timeout > 60000:
+                raise ValueError("'timeout' must be from 1 to 60000")
+
+            # spacings smaller than one millisecond are impossible for the
+            # same reason as above, and it doesn't make sense for the spacing
+            # to be bigger than the timeout.
+            if args.spacing < 1 or args.spacing > args.timeout:
+                raise ValueError("'spacing' must be from 1 to timeout")
+
+            # Less than one probe per landmark doesn't make sense, and more
+            # than 20 is unlikely to be helpful.
+            if args.n_probes < 1 or args.n_probes > 20:
+                raise ValueError("'n_probes' must be from 1 to 20")
+
+            return args
+
+    except (configparser.Error, ValueError) as e:
+        sys.stderr.write("{}: parse error: {}\n".format(args.config, e))
+        sys.exit(1)
+
+    except OSError as e:
+        sys.stderr.write("{}: {}\n".format(args.config, e.strerror))
+        sys.exit(1)
+
+def parse_command_line():
+    ap = argparse.ArgumentParser(
+        description=__doc__
+    )
+
+    ap.add_argument("landmark_list",
+                    help="List of landmarks to probe, as a CSV file with "
+                    "one or two columns - host,port in that order, or "
+                    "just host.")
+    ap.add_argument("-c", "--config",
+                    help="Local configuration file (default: probe.cf)")
+    ap.add_argument("-C", "--core",
+                    help="Measurement core executable (default: probe-core)")
+
+    ap.add_argument("--latitude", type=float, metavar="LAT",
+                    help="Latitude of this computer (decimal degrees)")
+    ap.add_argument("--longitude", type=float, metavar="LON",
+                    help="Longitude of this computer (decimal degrees)")
+    ap.add_argument("--location-unknown", action="store_true",
+                    help="Location of this computer is unknown")
+
+    ap.add_argument("--proxy-latitude", type=float, metavar="LAT",
+                    help="Latitude of the network proxy (decimal degrees)")
+    ap.add_argument("--proxy-longitude", type=float, metavar="LON",
+                    help="Longitude of the network proxy (decimal degrees)")
+    ap.add_argument("--proxy-location-unknown", action="store_true",
+                    help="Location of the network proxy is unknown")
+    ap.add_argument("--proxy-label", metavar="LABEL",
+                    help="Identifying label for the proxy.")
+    ap.add_argument("--client-ip", metavar="ADDRESS",
+                    help="The true IP address of the host running this "
+                    "program.")
+
+    ap.add_argument("--socks5", metavar="ADDR:PORT",
+                    help="Address of a SOCKSv5 proxy to use.")
+
+    ap.add_argument("--no-publication", action="store_true",
+                    help="If the database is ever published, don't include "
+                    "these measurements.")
+
+    args = ap.parse_args()
+    if ((not args.location_unknown
+         and (args.latitude is None or args.longitude is None))
+        or (args.location_unknown
+            and (args.latitude is not None or args.longitude is not None))):
+        ap.error("must specify both --latitude and --longitude, "
+                 "or else --location-unknown")
+    if (not args.proxy_location_unknown
+        and args.proxy_latitude is None
+        and args.proxy_longitude is None):
+        setattr(args, "proxied_connection", False)
+
+    else:
+        setattr(args, "proxied_connection", True)
+        if ((not args.proxy_location_unknown
+             and (args.proxy_latitude is None or args.proxy_longitude is None))
+            or (args.proxy_location_unknown
+                and (args.proxy_latitude is not None
+                     or args.proxy_longitude is not None))):
+            ap.error("must specify both --proxy-latitude and "
+                     "--proxy-longitude, or else --proxy-location-unknown")
+
+        if not args.client_ip:
+            ap.error("must specify --client-ip when a proxy is in use")
+
+    if args.socks5:
+        try:
+            host, port = args.socks5.split(":")
+            args.socks5 = socket.getaddrinfo(
+                host, port,
+                socket.AF_UNSPEC, socket.SOCK_STREAM)[0][4]
+        except Exception as e:
+            ap.error("invalid --socks5 argument: " + str(e))
+
+    thisdir = os.path.dirname(os.path.abspath(__file__))
+    if args.core is None:
+        if args.socks5:
+            args.core = os.path.join(thisdir, "probe-core-socks")
+        else:
+            args.core = os.path.join(thisdir, "probe-core-direct")
+    if args.config is None:
+        args.config = os.path.join(thisdir, "probe.cf")
+
+    return args
+
+def main():
+    args = parse_command_line()
+    cfg = parse_local_config_file(args)
+    landmarks = load_landmark_list(cfg.landmark_list)
+    results = perform_probes(cfg, landmarks)
+
+    # Stuff the total number of landmarks into the 'cfg' object in
+    # order to make it more easily extractable from the results blob
+    setattr(cfg, "n_landmarks", len(landmarks))
+
+    sys.exit(record_results(cfg, results, landmarks))
+
+main()

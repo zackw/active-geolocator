@@ -467,14 +467,24 @@ def compute_coarse_circles(cfg, landmarks, results):
     # Get the minimum RTT to each landmark.
     rtt_by_addr = collections.defaultdict(list)
     for r in results:
-        rtt_by_addr[r[0]].append(r[3])
+        # Don't consider results that did not end with a successful
+        # connection or ECONNREFUSED.
+        if r[2] == 0 or r[2] == "ECONNREFUSED":
+            rtt_by_addr[r[0]].append(r[3])
     minrtt_by_addr = { a: min(v) for a,v in rtt_by_addr.items() }
 
     probe_overhead = 0
+    # Calculate the connection overhead.
     for lm in landmarks:
-        if (abs(lm.lat) < 0.5 and abs(lm.lat) < 0.5
-            and 0 < minrtt_by_addr[lm.host] < cfg.overhead_limit):
-            probe_overhead = max(probe_overhead, minrtt_by_addr[lm.host])
+        if abs(lm.lat) < 0.5 and abs(lm.lat) < 0.5:
+            oh = minrtt_by_addr.get(lm.host, 0)
+            if oh == cfg.client_ip:
+                oh /= 2
+            probe_overhead = max(probe_overhead, oh)
+    if not cfg.proxied_connection:
+        probe_overhead = min(probe_overhead, cfg.overhead_limit)
+    else:
+        probe_overhead = min(probe_overhead, cfg.proxy_overhead_limit)
 
     setattr(cfg, "overhead", probe_overhead)
 
@@ -554,6 +564,10 @@ def get_landmark_list(cfg, circles=None):
             landmarks = validate_landmark_list(
                 json.loads(f.read().decode("utf-8")))
             sys.stderr.write("ok, {} landmarks\n".format(len(landmarks)))
+
+            if circles is None and cfg.client_ip:
+                landmarks.append(AddrTuple(
+                    cfg.client_ip, 80, 0, 0, 0, 0))
             return landmarks
 
     except (URLError, TypeError, ValueError, UnicodeError) as e:
@@ -591,6 +605,7 @@ def parse_local_config_file(args):
                 ("cbg_default_speed", getfloat),
                 ("cbg_default_delay", getfloat),
                 ("overhead_limit", getfloat),
+                ("proxy_overhead_limit", getfloat),
             ]
             for k, getter in config_keys:
                 setattr(args, k, getter(p, k))
@@ -659,6 +674,9 @@ def parse_command_line():
                     help="Location of the network proxy is unknown")
     ap.add_argument("--proxy-label", metavar="LABEL",
                     help="Identifying label for the proxy.")
+    ap.add_argument("--client-ip", metavar="ADDRESS",
+                    help="The true IP address of the host running this "
+                    "program.  Used to estimate RTT overhead due to a proxy.")
 
     ap.add_argument("--socks5", metavar="ADDR:PORT",
                     help="Address of a SOCKSv5 proxy to use.")
@@ -681,6 +699,7 @@ def parse_command_line():
         and args.proxy_latitude is None
         and args.proxy_longitude is None):
         setattr(args, "proxied_connection", False)
+
     else:
         setattr(args, "proxied_connection", True)
         if ((not args.proxy_location_unknown
@@ -690,6 +709,9 @@ def parse_command_line():
                      or args.proxy_longitude is not None))):
             ap.error("must specify both --proxy-latitude and "
                      "--proxy-longitude, or else --proxy-location-unknown")
+
+        if not args.client_ip:
+            ap.error("must specify --client-ip when a proxy is in use")
 
     if args.socks5:
         try:

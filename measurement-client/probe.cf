@@ -29,8 +29,11 @@ n_probes = 3
 n_fine_landmarks = 25
 
 # Overhead limit: if the connection overhead is measured to be bigger than
-# this many milliseconds, we don't believe it.  Needs tuning.
+# this many milliseconds, it is clamped to that value.  Needs tuning.
 overhead_limit = 100
+
+# Overhead limit used when the connection is via a proxy.
+proxy_overhead_limit = 500
 
 ## CBG tuning parameters - see calibration.py for rationale
 # ½ equatorial circumf. of Earth (m)

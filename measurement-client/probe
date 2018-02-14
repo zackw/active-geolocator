@@ -349,7 +349,7 @@ def report_results(cfg, results, landmarks, coarse_circles):
             code = f.getcode()
             body = f.read()
     except URLError as e:
-        sys.stderr.write("\n{}:\n   {}\n".format(cfg.landmark_url, e))
+        sys.stderr.write("\n{}:\n   {}\n".format(cfg.results_url, e))
         try:
             sys.stderr.write("   reason: {}\n".format(e.reason))
             sys.stderr.write("   body:\n")

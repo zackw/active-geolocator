@@ -2,7 +2,10 @@
 
 This is a testbed implementation of various “active geolocation”
 algorithms.  Please see the [website][] for an overview of the
-project.
+project and the [paper][] ("How to Catch when Proxies Lie:
+Verifying the Physical Locations of Network Proxies with Active
+Geolocation", 2018 Internet Measurement Conference) for findings
+so far.
 
 ## Running the measurement client
 
@@ -127,6 +130,7 @@ to be included in such a publication, append `--no-publication` to the
 `probe` command.
 
 [website]: https://research.owlfolio.org/active-geo/
+[paper]: https://research.owlfolio.org/pubs/2018-catch-proxies-lie.pdf
 [measurement-client]: https://github.com/zackw/active-geolocator/tree/master/measurement-client
 [GPS]: https://en.wikipedia.org/wiki/Global_Positioning_System
 [mygps]: https://play.google.com/store/apps/details?id=com.gpscoordinatesandlocation

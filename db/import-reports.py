@@ -1,6 +1,7 @@
 #! /usr/bin/python3
 
 import collections
+import errno
 import glob
 import json
 import os
@@ -9,6 +10,13 @@ import subprocess
 import sys
 
 # Usage: import-reports <directory> <database>
+
+def errcode(s):
+    if isinstance(s, int): return s
+    if s == "0" or s == "success": return 0
+    v = getattr(errno, s, None)
+    if v: return v
+    return int(s)
 
 def read_one_report(fname, bname):
     with subprocess.Popen(
@@ -24,7 +32,7 @@ def read_one_report(fname, bname):
     blob['blob'] = bname
 
     results = [
-        (r[0], int(r[2]), float(r[3]))
+        (r[0], errcode(r[2]), float(r[3]))
         for r in blob['results']
     ]
     del blob['results']
@@ -33,18 +41,14 @@ def read_one_report(fname, bname):
     meta['date']        = blob['timestamp']
     meta['proxied']     = ('proxied_connection' in blob and
                            blob['proxied_connection'])
+    meta['client_addr'] = blob.get('client_addr', '0.0.0.0')
+    meta['proxy_addr']  = blob.get('proxy_addr', '0.0.0.0')
 
     if meta['proxied']:
-        meta['proxy_addr'] = blob['client_ip']
-        meta['client_addr'] = '0.0.0.0'
         if 'socks5' in blob:
             blob['proxy_type'] = 'socks5'
         else:
             blob['proxy_type'] = 'ovpn'
-
-    else:
-        meta['client_addr'] = blob['client_ip']
-        meta['proxy_addr']  = '0.0.0.0'
 
     if 'location_unknown' in meta:
         meta['client_lat']  = 0
@@ -63,7 +67,8 @@ def read_one_report(fname, bname):
     if 'core' in blob:                   del blob['core']
     if 'timestamp' in blob:              del blob['timestamp']
     if 'proxied_connection' in blob:     del blob['proxied_connection']
-    if 'client_ip' in blob:              del blob['client_ip']
+    if 'client_addr' in blob:            del blob['client_addr']
+    if 'proxy_addr' in blob:             del blob['proxy_addr']
     if 'latitude' in blob:               del blob['latitude']
     if 'longitude' in blob:              del blob['longitude']
     if 'location_unknown' in blob:       del blob['location_unknown']

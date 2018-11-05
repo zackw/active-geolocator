@@ -292,8 +292,14 @@ def probe_results(request, config, log, lmdb):
     if not blob:
         bad_request("blob is empty")
 
-    blob['client_ip'] = request.remote_addr
-    blob = json.dumps(blob, separators=(',',':'), sort_keys=True).encode('utf-8')
+    if blob.get('proxied_connection', False):
+        blob['proxy_addr'] = request.remote_addr
+    else:
+        if 'client_addr' not in blob:
+            blob['client_addr'] = request.remote_addr
+
+    blob = json.dumps(blob, separators=(',',':'),
+                      sort_keys=True).encode('utf-8')
 
     os.makedirs(config['REPORT_DIR'], exist_ok=True)
     with tempfile.NamedTemporaryFile(
